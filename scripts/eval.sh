@@ -1,9 +1,9 @@
 #!/bin/bash
 
-export PYTHONPATH=/path/to/SafeVLA  # change to your own path
-export OBJAVERSE_HOUSES_DIR=/path/to/objaverse_houses  # change to your own path
-export OBJAVERSE_DATA_DIR=/path/to/objaverse_assets  # change to your own path
-export HF_ENDPOINT=https://hf-mirror.com
+export PYTHONPATH=/root/SafeVLA  # change to your own path
+export OBJAVERSE_HOUSES_DIR=/root/data/objaverse_houses  # change to your own path
+export OBJAVERSE_DATA_DIR=/root/data/objaverse_assets  # change to your own path
+export HF_HOME=/root/huggingface
 export ALLENACT_DEBUG=True
 export ALLENACT_DEBUG_VST_TIMEOUT=2000
 
@@ -114,7 +114,7 @@ else
 fi
 
 # Build the command
-cmd="python training/online/online_eval.py"
+cmd="python3 /root/SafeVLA/training/online/online_eval.py"
 
 # Add shuffle flag if enabled
 if [ "$shuffle" = true ]; then
@@ -135,7 +135,9 @@ cmd="$cmd \
     --house_set $house_set \
     --num_workers $num_workers \
     --seed $seed \
-    --ckpt_path $ckpt_path"
+    --ckpt_path $ckpt_path \
+    --wandb_project_name safety_chores \
+    --wandb_entity_name rdesc1-milaquebec"
 
 # Execute the command
 echo "Executing command:"
