@@ -40,4 +40,9 @@ Test eval script
 bash /root/SafeVLA/scripts/eval.sh --task_type pickup --ckpt_path /root/data/models/spoc_IL/model.ckpt
 ```
 
+Test train script
+```bash
+bash /root/SafeVLA/scripts/train.sh --task_type fetch --il_ckpt_path /root/data/models/spoc_IL/model.ckpt --output_dir /root/data/models/ --dataset_dir /root/data/test01
+```
+
 
