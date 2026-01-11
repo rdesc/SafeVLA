@@ -20,6 +20,7 @@ export DATA_PATH=/network/scratch/d/deschaer/SafeVLA/data
 Launch singularity module
 ```bash
 module load singularity
+```
 
 Start singularity container
 ```bash
