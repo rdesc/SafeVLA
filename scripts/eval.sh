@@ -126,6 +126,10 @@ if [ "$test_augmentation" = true ]; then
     cmd="$cmd --test_augmentation"
 fi
 
+# Get wandb project and entity from environment variables
+wandb_project="${WANDB_PROJECT:-}"
+wandb_entity="${WANDB_ENTITY:-}"
+
 # Add other parameters
 cmd="$cmd \
     --eval_subset $eval_subset \
@@ -136,8 +140,8 @@ cmd="$cmd \
     --num_workers $num_workers \
     --seed $seed \
     --ckpt_path $ckpt_path \
-    --wandb_project_name safety_chores \
-    --wandb_entity_name rdesc1-milaquebec"
+    --wandb_project_name "$wandb_project" \
+    --wandb_entity_name "$wandb_entity"
 
 # Execute the command
 echo "Executing command:"

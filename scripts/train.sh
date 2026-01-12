@@ -121,6 +121,14 @@ if [ -n "$resume_checkpoint" ]; then
     cmd="$cmd --checkpoint $resume_checkpoint"
 fi
 
+# Get wandb project and entity from environment variables if not provided
+if [ -z "$wandb_project" ]; then
+    wandb_project="${WANDB_PROJECT:-}"
+fi
+if [ -z "$wandb_entity" ]; then
+    wandb_entity="${WANDB_ENTITY:-}"
+fi
+
 # Add wandb parameters if provided
 if [ -n "$wandb_project" ] && [ -n "$wandb_entity" ]; then
     cmd="$cmd \
