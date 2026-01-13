@@ -12,4 +12,4 @@ singularity shell --nv \
   --bind ${CODE_PATH}:/root/SafeVLA \
   --bind ${DATA_PATH}:/root/data \
   --bind ${HF_HOME}:/root/huggingface \
-  data/models/safevla.sif
+  safevla.sif
