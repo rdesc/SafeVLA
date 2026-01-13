@@ -20,6 +20,7 @@ export WANDB_PROJECT=safety_chores
 export WANDB_ENTITY=rdesc1-milaquebec # edit this!!
 ```
 
+## Launching singularity environment
 Launch singularity module
 ```bash
 module load singularity
@@ -32,6 +33,11 @@ singularity shell --nv \
   --bind ${DATA_PATH}:/root/data \
   --bind ${HF_HOME}:/root/huggingface \
   safevla.sif
+```
+
+Or, launch the startup script (you'll need to update the env variables)
+```bash
+./startup.sh
 ```
 
 Go to safevla root inside repo
@@ -58,6 +64,8 @@ cd /root/SafeVLA
     - Path: `data/models/{task}/model.ckpt`
 
 3. Task-Specific SafeVLA  Models (fetch, pickup, objectnav)
+    - Checkpoints: https://huggingface.co/SafetyEmbodiedAI/safety-model  
+    - Path: `data/models/safe_{task}.pt`
 
 ## Demo scripts
 Test eval script
@@ -66,7 +74,7 @@ bash /root/SafeVLA/scripts/eval.sh --task_type pickup --ckpt_path /root/data/mod
 ```
 Test train script
 ```bash
-bash /root/SafeVLA/scripts/train.sh --task_type fetch --il_ckpt_path /root/data/models/spoc_IL/model.ckpt --output_dir /root/data/models/ --dataset_dir /root/data/training_data/astar/
+CUDA_VISIBLE_DEVICES=0,1,2,3  bash /root/SafeVLA/scripts/train.sh --task_type fetch --il_ckpt_path /root/data/models/spoc_IL/model.ckpt --output_dir /root/data/models/  --dataset_dir /root/data/training_data/astar/ --num_train_processes 4
 ```
 
 ## FLaRe's Role in SafeVLA
@@ -86,3 +94,8 @@ Safe RL Fine-tuning with cost constraints
          ↓
    SafeVLA (Safety-aligned models)
 ```
+
+## Debug
+Log files
+- ~/.config/unity3d/Allen\ Institute\ for\ Artificial\ Intelligence/AI2-THOR/Player-prev.log
+- ~/.ai2thor/log/unity.log
