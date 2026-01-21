@@ -190,7 +190,7 @@ class TaskSpecSamplerInfiniteList(TaskSpecSampler):
             or self.current_house_ind is None
             or not self.repeat_house_until_forced
         ):
-            self.current_house_ind = self.house_inds.pop()
+            self.current_house_ind = self.house_inds.pop(0)
         else:
             # If we're not being forced to advance, and we're repeating houses, then do nothing
             pass
@@ -214,7 +214,7 @@ class TaskSpecSamplerInfiniteList(TaskSpecSampler):
                 force_advance_scene=force_advance_scene, house_index=house_index
             )
 
-        self.last_task_spec = map_task_spec(self.specs_for_current_house.pop())
+        self.last_task_spec = map_task_spec(self.specs_for_current_house.pop(0))
         return self.last_task_spec
 
     def __len__(self) -> Union[int, float]:

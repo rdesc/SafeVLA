@@ -45,7 +45,7 @@ from utils.type_utils import RewardConfig, THORActions
 from utils.wandb_logging import SimpleWandbLogging
 
 from architecture.models.allenact_transformer_models.separate_actor_critic import (
-    SafeDinoLLAMATxNavActorCriticSeparate,
+    SafeDinoLLAMATxNavActorCriticSeparate, DinoLLAMATxNavActorCriticSeparate
 )
 
 from environment.vision_sensors import (
@@ -54,7 +54,7 @@ from environment.vision_sensors import (
 )
 from environment.manipulation_sensors import AnObjectIsInHand
 
-from training.online.loss.customized_loss import PPOLogGrad, SafePPOLogGrad
+from training.online.loss.customized_loss import GRPOLogGrad, PPOLogGrad, SafePPOLogGrad
 
 
 @dataclass
@@ -70,6 +70,7 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     wandb_entity: str = ""
     collision_penalty: float = -0.00
     lr: float = 2e-5
+    shaping_weight: float = 0.0
 
     # preprocess params
     rgb_height: int = 224
@@ -86,6 +87,19 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     full_sensor: bool = True
 
     il_ckpt_path: Optional[str] = None
+    use_grpo: bool = False
+    grpo_num_generations: int = 4
+    grpo_beta: float = 0.0  # NOTE: not implemented
+    grpo_clip_param: float = 0.1
+    grpo_group_advantage_eps: float = 1e-5
+    grpo_per_step_advantage: bool = False
+    max_stage_steps: int = int(1e9)
+    
+    num_mini_batch: int = 1
+    update_repeats: int = 4  # number of iterations per update
+    max_grad_norm: float = 0.5
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
 
 
 class DinoV2ViTSTSFMBase(BaseConfig):
@@ -102,7 +116,7 @@ class DinoV2ViTSTSFMBase(BaseConfig):
             step_penalty=0.00,
             goal_success_reward=10.0,
             failed_stop_reward=0.0,
-            shaping_weight=0.0,
+            shaping_weight=self.params.shaping_weight,
             reached_horizon_reward=0.0,
             positive_only_reward=False,
             failed_action_penalty=self.params.collision_penalty,
@@ -218,7 +232,7 @@ class DinoV2ViTSTSFMBase(BaseConfig):
             None,
         )
 
-        if self.params.use_sep_critic:
+        if self.params.use_sep_critic and not self.params.use_grpo:
             # model_init_func = DinoLLAMATxNavActorCriticSeparate
             model_init_func = SafeDinoLLAMATxNavActorCriticSeparate
         else:
@@ -267,6 +281,7 @@ class DinoV2ViTSTSFMBase(BaseConfig):
                 "nav_accurate_object_bbox" if self.params.use_bbox else None
             ),
             prev_checkpoint=self.params.il_ckpt_path,
+            critic_type="disable" if self.params.use_grpo else "linear",
         )
 
         non_nav_action_inds = [
@@ -320,19 +335,32 @@ class DinoV2ViTSTSFMBase(BaseConfig):
             discrete_critics=False,
             normalize_advantage=False,
         )
+        NewGRPOConfig = dict(
+            clip_param=self.params.grpo_clip_param,
+            group_advantage_eps=self.params.grpo_group_advantage_eps,
+            per_step_advantage=self.params.grpo_per_step_advantage,
+        )
 
         assert (
             self.params.advance_scene_rollout_period is None
         ), "use STEPS_IN_HOUSE_BEFORE_FORCE_SCENE_ADVANCE instead"
 
-        return TrainingPipeline(
-            save_interval=self.params.save_interval,
-            metric_accumulate_interval=self.params.metric_accumulate_interval,
-            optimizer_builder=Builder(optim.Adam, dict(lr=self.params.lr)),
-            num_mini_batch=1,
-            update_repeats=4,
-            max_grad_norm=0.5,
-            named_losses={
+        if self.params.use_grpo:
+            named_losses = {"grpo_log_loss": GRPOLogGrad(**NewGRPOConfig)}
+            use_gae = False
+            pipeline_stages = [
+                PipelineStage(
+                    loss_names=["grpo_log_loss"],
+                    max_stage_steps=self.params.max_stage_steps,
+                    training_settings=TrainingSettings(
+                        num_steps=self.params.max_steps,
+                        metric_accumulate_interval=log_interval_small,
+                        advance_scene_rollout_period=None,  # scenes are advanced at the end of every rollout 
+                    ),
+                )
+            ]
+        else:
+            named_losses = {
                 "ppo_log_loss": SafePPOLogGrad(**NewPPOConfig),
                 "ppo_value_loss": PPOValue(
                     clip_param=0.1, use_clipped_value_loss=False
@@ -340,12 +368,9 @@ class DinoV2ViTSTSFMBase(BaseConfig):
                 "safe_ppo_value_loss": SafePPOValue(
                     clip_param=0.1, use_clipped_value_loss=False
                 ),
-            },
-            # "safe_ppo_value_loss": SafePPOValue(clip_param=0.1, use_clipped_value_loss=False)},
-            gamma=0.99,
-            use_gae=True,
-            gae_lambda=0.95,
-            pipeline_stages=[
+            }
+            use_gae = True
+            pipeline_stages = [
                 PipelineStage(
                     loss_names=["ppo_value_loss", "safe_ppo_value_loss"],
                     max_stage_steps=batch_steps_0,
@@ -376,7 +401,20 @@ class DinoV2ViTSTSFMBase(BaseConfig):
                         // 128,
                     ),
                 ),
-            ],
+            ]
+
+        return TrainingPipeline(
+            save_interval=self.params.save_interval,
+            metric_accumulate_interval=self.params.metric_accumulate_interval,
+            optimizer_builder=Builder(optim.Adam, dict(lr=self.params.lr)),
+            num_mini_batch=self.params.num_mini_batch,
+            update_repeats=self.params.update_repeats,  # number of PPO iterations
+            max_grad_norm=self.params.max_grad_norm,
+            named_losses=named_losses,
+            gamma=self.params.gamma,
+            use_gae=use_gae,
+            gae_lambda=self.params.gae_lambda,
+            pipeline_stages=pipeline_stages,
         )
 
     def wandb_logging_callback(self) -> SimpleWandbLogging:

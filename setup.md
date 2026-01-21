@@ -99,3 +99,25 @@ Safe RL Fine-tuning with cost constraints
 Log files
 - ~/.config/unity3d/Allen\ Institute\ for\ Artificial\ Intelligence/AI2-THOR/Player-prev.log
 - ~/.ai2thor/log/unity.log
+
+Adding breakpoints in code in singularity + torch.distributed:
+```python
+  from remote_pdb import set_trace
+  set_trace()
+```
+After breakpoint is reached:
+```bash
+Ctrl-Z
+bg
+telnet IP PORT
+```
+Debug in pdb-like environment
+
+
+## Rebuilding singularity image
+```bash
+sudo singularity build safevla.sif safevla.def
+```
+
+## SafeVLA changes to AllenAct
+https://github.com/rdesc/allenact/commit/724c6ff35d6a8000083a8e6ea4ea447bc003a5ce#diff-649be34b9c4feca89c74a7a1a8d612ef927e820f9f4e4780b3195fa2d2eb17f5

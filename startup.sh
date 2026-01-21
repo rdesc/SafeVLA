@@ -13,3 +13,7 @@ singularity shell --nv \
   --bind ${DATA_PATH}:/root/data \
   --bind ${HF_HOME}:/root/huggingface \
   safevla.sif
+
+
+# debug 
+# export PYTHONPATH=/root/SafeVLA/allenact:$PYTHONPATH

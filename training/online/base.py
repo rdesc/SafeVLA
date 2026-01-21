@@ -43,6 +43,7 @@ def task_sampler_args_builder(
     devices: Optional[List[int]] = None,
     max_houses: Optional[int] = None,
     seed: Optional[int] = None,
+    shuffle_task_specs: Optional[bool] = None,
 ):
     assert on_server or max_houses is not None, (
         "max_houses must be provided if not on server. "
@@ -80,13 +81,13 @@ def task_sampler_args_builder(
 
     # create task_spec sampler
     if mode == "train":
-        house_index_to_task_specs = defaultdict(lambda: [])
+        house_index_to_task_specs = defaultdict(lambda: [])  # {house_index: [task_spec, ...], ...}
         for task_spec in selected_task_specs:
             house_index_to_task_specs[task_spec["house_index"]].append(task_spec)
 
         task_spec_sampler = TaskSpecSamplerInfiniteList(
-            house_index_to_task_specs, shuffle=True, repeat_house_until_forced=True
-        )
+            house_index_to_task_specs, shuffle=shuffle_task_specs, repeat_house_until_forced=True
+        ) # TODO: should we be shuffling? maybe just have specific rng seed for shuffling
     else:
         task_spec_sampler = TaskSpecDatasetList(selected_task_specs)
 
@@ -112,7 +113,7 @@ def task_sampler_args_builder(
         "controller_args": controller_args,
         "controller_type": controller_type,
         "device": device,
-        "visualize": False,
+        "visualize": False,  # TODO: what can we visualize?
         "always_allocate_a_new_stretch_controller_when_reset": True,
         "retain_agent_pose": False,
         "prob_randomize_materials": prob_randomize_materials,
@@ -126,7 +127,7 @@ class BaseConfigParams:
     distributed_nodes: int = 1
     test_on_validation: bool = True
     dataset_dir: str = "data/fifteen/ObjectNavType"
-    max_steps: int = 500
+    max_steps: int = 600  # in the paper they used 600 steps
     max_houses: Optional[int] = None
     max_task_specs: Optional[int] = None
     tag: str = "ObjectNavType-RL"
@@ -282,7 +283,7 @@ class BaseConfig(ExperimentConfig, ABC):
         return params
 
     def make_sampler_fn(self, **kwargs) -> TaskSampler:
-        print("kwargs", kwargs)
+        # print("kwargs", kwargs)
         return MultiTaskSampler(**kwargs)
 
     def get_sampler_args(
@@ -299,15 +300,43 @@ class BaseConfig(ExperimentConfig, ABC):
             seed = seeds[process_ind % len(seeds)]
         elif mode in ["val", "test"]:
             seed = 0
-
+            
+        group_process_ind = process_ind
+        group_total_processes = total_processes
+        shuffle_task_specs = True
+        use_grpo = getattr(self.params, "use_grpo", False)
+        
+        if mode == "train" and use_grpo:
+            num_generations = self.params.grpo_num_generations
+            num_workers = len(self.get_devices(mode)) * self.params.distributed_nodes
+            if total_processes % num_workers != 0:
+                raise ValueError(
+                    "GRPO requires num_train_processes to be divisible by "
+                    "the number of workers"
+                )
+            samplers_per_worker = total_processes // num_workers
+            if num_generations != samplers_per_worker:
+                raise ValueError(
+                    "GRPO requires grpo_num_generations to match samplers_per_worker"
+                ) # TODO actually maybe we dont need this requirement
+            group_total_processes = num_workers
+            group_process_ind = process_ind // num_generations
+            shuffle_task_specs = False
+            
+        device = devices[group_process_ind % len(devices)] if devices is not None else None
+        print(f"Process {process_ind} | Seed: {seed} | Group: {group_process_ind} | Device: {device}"
+              f"| All Devices: {devices} | Total Procs: {group_total_processes} | Shuffle: {shuffle_task_specs}")
+        
         return task_sampler_args_builder(
-            process_ind=process_ind,
-            total_processes=total_processes,
+            process_ind=group_process_ind,
+            total_processes=group_total_processes,
             devices=devices,
             deterministic_cudnn=deterministic_cudnn,
             mode=mode,
             task_specs=self.get_task_specs(
-                subset=mode, process_ind=process_ind, total_processes=total_processes
+                subset=mode,
+                process_ind=group_process_ind,
+                total_processes=group_total_processes,
             ),
             houses=self.houses[mode],
             on_server=torch.cuda.is_available(),
@@ -317,6 +346,7 @@ class BaseConfig(ExperimentConfig, ABC):
             max_houses=self.params.max_houses,
             prob_randomize_materials=0.8 if mode == "train" else 0,
             seed=seed,
+            shuffle_task_specs=shuffle_task_specs,
         )
 
     def train_task_sampler_args(

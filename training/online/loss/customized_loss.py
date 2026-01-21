@@ -14,6 +14,11 @@ from typing import Dict, Optional, Callable, cast, Tuple
 from omnisafe.common.lagrange import Lagrange
 
 
+def _add_trailing_dims(t: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+    assert len(t.shape) <= len(ref.shape)
+    return t.view(t.shape + ((1,) * (len(ref.shape) - len(t.shape))))
+
+
 class Imitation(AbstractActorCriticLoss):
     """Expert imitation loss."""
 
@@ -191,18 +196,12 @@ class PPOLogGrad(PPO):
             actor_critic_output.distributions, self.entropy_method_name
         )()
 
-        def add_trailing_dims(t: torch.Tensor):
-            assert len(t.shape) <= len(batch[self.adv_key].shape)
-            return t.view(
-                t.shape + ((1,) * (len(batch[self.adv_key].shape) - len(t.shape)))
-            )
-
-        dist_entropy = add_trailing_dims(dist_entropy)
+        dist_entropy = _add_trailing_dims(dist_entropy, batch[self.adv_key])
 
         clip_param = self.clip_param * self.clip_decay(step_count)
 
         ratio = torch.exp(action_log_probs - batch["old_action_log_probs"])
-        ratio = add_trailing_dims(ratio)
+        ratio = _add_trailing_dims(ratio, batch[self.adv_key])
         clamped_ratio = torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param)
 
         surr1 = ratio * batch[self.adv_key]
@@ -298,6 +297,123 @@ class PPOLogGrad(PPO):
         return result
 
 
+class GRPOLogGrad(AbstractActorCriticLoss):
+    def __init__(
+        self,
+        clip_param: float,
+        group_advantage_eps: float = 1e-5,
+        per_step_advantage: bool = False,
+    ):
+        super().__init__()
+        self.clip_param = clip_param
+        self.group_advantage_eps = group_advantage_eps
+        self.per_step_advantage = per_step_advantage
+        # NOTE Optional GRPO variants (entropy regularization, clip decay, action loss schedules)
+        # can be added here if we choose to mirror PPO-style training knobs.
+
+    def _episode_advantages(self, returns: torch.Tensor) -> torch.Tensor:
+        if returns.dim() > 2 and returns.shape[-1] == 1:
+            returns = returns.squeeze(-1)
+
+        if returns.dim() != 2:
+            returns = returns.view(returns.shape[0], returns.shape[1], -1).mean(-1)
+
+        episode_returns = returns[0]
+        mean = episode_returns.mean()
+        std = episode_returns.std(unbiased=False)
+        return (episode_returns - mean) / (std + self.group_advantage_eps)
+
+    def _per_step_advantages(
+        self, returns: torch.Tensor, masks: torch.Tensor
+    ) -> torch.Tensor:
+        if returns.dim() > 2 and returns.shape[-1] == 1:
+            returns = returns.squeeze(-1)
+        if masks.dim() > 2 and masks.shape[-1] == 1:
+            masks = masks.squeeze(-1)
+
+        if returns.dim() != 2:
+            returns = returns.view(returns.shape[0], returns.shape[1], -1).mean(-1)
+        if masks.dim() != 2:
+            masks = masks.view(masks.shape[0], masks.shape[1], -1)[:, :, 0]
+
+        masks = masks.to(dtype=returns.dtype)
+        masks[0].fill_(1.0)
+        adv = torch.zeros_like(returns)
+        for t in range(returns.shape[0]):
+            active = masks[t] > 0
+            if not active.any():
+                continue
+            vals = returns[t][active]
+            mean = vals.mean()
+            std = vals.std(unbiased=False)
+            adv[t][active] = (vals - mean) / (std + self.group_advantage_eps)
+        return adv
+
+    def loss(  # type: ignore
+        self,
+        step_count: int,
+        batch: ObservationType,
+        actor_critic_output: ActorCriticOutput[CategoricalDistr],
+        *args,
+        **kwargs,
+    ):
+  
+        actions = cast(torch.LongTensor, batch["actions"])
+        action_log_probs = actor_critic_output.distributions.log_prob(actions)
+
+        masks = cast(torch.FloatTensor, batch["masks"])
+        returns = cast(torch.FloatTensor, batch["returns"])
+        if self.per_step_advantage:
+            group_adv = self._per_step_advantages(returns=returns, masks=masks)
+        else:
+            episode_adv = self._episode_advantages(returns=returns)
+            group_adv = episode_adv.view(1, -1)
+            group_adv = _add_trailing_dims(group_adv, masks)
+
+        clip_param = self.clip_param
+        ratio = torch.exp(action_log_probs - batch["old_action_log_probs"])
+
+        ratio = _add_trailing_dims(ratio, group_adv)
+        clamped_ratio = torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param)
+
+        surr1 = ratio * group_adv
+        surr2 = clamped_ratio * group_adv
+        use_clamped = surr2 < surr1
+        action_loss = -torch.where(cast(torch.Tensor, use_clamped), surr2, surr1)
+
+        valid_mask = _add_trailing_dims(masks, action_loss)
+        valid_mask[0].fill_(1.0)
+        action_loss = action_loss * valid_mask
+
+        denom = valid_mask.sum()
+        assert denom > 0, "GRPO expected non-empty valid mask."
+        action_loss_mean = action_loss.sum() / denom
+
+        total_loss = action_loss_mean
+
+        if self.per_step_advantage:
+            flat_mask = masks.reshape(-1).to(dtype=torch.float32)
+            flat_returns = returns.reshape(-1)
+            active_returns = flat_returns[flat_mask > 0]
+            assert active_returns.numel() > 0, "GRPO expected non-empty active returns."
+            return_mean = float(active_returns.mean().item())
+            return_std = float(active_returns.std(unbiased=False).item())
+        else:
+            return_mean = float(returns[0].mean().item())
+            return_std = float(returns[0].std(unbiased=False).item())
+
+        return (
+            total_loss,
+            {
+                "action": float(action_loss_mean.item()),
+                "group_adv_std": float(group_adv.std(unbiased=False).item()),
+                "group_return_mean": return_mean,
+                "group_return_std": return_std,
+                "rollout_num_steps": actions.shape[0],
+            },
+        )
+
+
 class SafePPOLogGrad(PPO):
     def __init__(self, discrete_critics: bool, action_loss_schedule, *args, **kwargs):
         """
@@ -331,18 +447,12 @@ class SafePPOLogGrad(PPO):
             actor_critic_output.distributions, self.entropy_method_name
         )()
 
-        def add_trailing_dims(t: torch.Tensor):
-            assert len(t.shape) <= len(batch[self.adv_key].shape)
-            return t.view(
-                t.shape + ((1,) * (len(batch[self.adv_key].shape) - len(t.shape)))
-            )
-
-        dist_entropy = add_trailing_dims(dist_entropy)
+        dist_entropy = _add_trailing_dims(dist_entropy, batch[self.adv_key])
 
         clip_param = self.clip_param * self.clip_decay(step_count)
 
         ratio = torch.exp(action_log_probs - batch["old_action_log_probs"])
-        ratio = add_trailing_dims(ratio)
+        ratio = _add_trailing_dims(ratio, batch[self.adv_key])
         clamped_ratio = torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param)
 
         with torch.no_grad():
@@ -468,18 +578,12 @@ class PPOStopGrad(PPO):
             actor_critic_output.distributions, self.entropy_method_name
         )()
 
-        def add_trailing_dims(t: torch.Tensor):
-            assert len(t.shape) <= len(batch[self.adv_key].shape)
-            return t.view(
-                t.shape + ((1,) * (len(batch[self.adv_key].shape) - len(t.shape)))
-            )
-
-        dist_entropy = add_trailing_dims(dist_entropy)
+        dist_entropy = _add_trailing_dims(dist_entropy, batch[self.adv_key])
 
         clip_param = self.clip_param * self.clip_decay(step_count)
 
         ratio = torch.exp(action_log_probs - batch["old_action_log_probs"])
-        ratio = add_trailing_dims(ratio)
+        ratio = _add_trailing_dims(ratio, batch[self.adv_key])
         clamped_ratio = torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param)
 
         surr1 = ratio * batch[self.adv_key]
