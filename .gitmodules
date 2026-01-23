@@ -1,3 +1,4 @@
 [submodule "allenact"]
 	path = allenact
 	url = https://github.com/rdesc/allenact
+	branch = constrained_grpo
