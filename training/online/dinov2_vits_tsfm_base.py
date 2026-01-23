@@ -78,7 +78,7 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
 
     # training pipeline params
     save_interval: int = 50_000
-    metric_accumulate_interval: int = 1_000
+    log_metric_accumulate_interval: int = 1_000
 
     # overwrite the BaseConfigParams tag
     tag: str = "SafeVLA-ObjectNavType-RL-DinoV2-ViTS-TSFM"
@@ -354,7 +354,7 @@ class DinoV2ViTSTSFMBase(BaseConfig):
                     max_stage_steps=self.params.max_stage_steps,
                     training_settings=TrainingSettings(
                         num_steps=self.params.max_steps,
-                        metric_accumulate_interval=log_interval_small,
+                        metric_accumulate_interval=self.params.log_metric_accumulate_interval,
                         advance_scene_rollout_period=None,  # scenes are advanced at the end of every rollout 
                     ),
                 )
@@ -405,7 +405,7 @@ class DinoV2ViTSTSFMBase(BaseConfig):
 
         return TrainingPipeline(
             save_interval=self.params.save_interval,
-            metric_accumulate_interval=self.params.metric_accumulate_interval,
+            metric_accumulate_interval=self.params.log_metric_accumulate_interval,
             optimizer_builder=Builder(optim.Adam, dict(lr=self.params.lr)),
             num_mini_batch=self.params.num_mini_batch,
             update_repeats=self.params.update_repeats,  # number of PPO iterations
@@ -426,7 +426,7 @@ class DinoV2ViTSTSFMBase(BaseConfig):
             " Set these values when specifying the --config_kwargs when running the experiment."
         )
         return SimpleWandbLogging(
-            project=self.params.wandb_project, entity=self.params.wandb_entity
+            project=self.params.wandb_project, entity=self.params.wandb_entity,
         )
 
 

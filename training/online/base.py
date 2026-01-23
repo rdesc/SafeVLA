@@ -44,6 +44,7 @@ def task_sampler_args_builder(
     max_houses: Optional[int] = None,
     seed: Optional[int] = None,
     shuffle_task_specs: Optional[bool] = None,
+    house_inds_seed: Optional[int] = None,
 ):
     assert on_server or max_houses is not None, (
         "max_houses must be provided if not on server. "
@@ -71,8 +72,9 @@ def task_sampler_args_builder(
         ), f"Hdf5TaskSpecs.total_procs ({task_specs.total_procs}) must match total_processes ({total_processes})"
         selected_task_specs = task_specs
         selected_house_inds = [
-            task_spec["house_index"] for task_spec in selected_task_specs
+            task_spec["house_index"] for task_spec in selected_task_specs #  if int(task_spec["house_index"]) != 76
         ]
+        assert len(selected_house_inds) > 0, "No house indices found in selected task specs!"
         selected_houses = houses.select(selected_house_inds)
     else:
         raise NotImplementedError(
@@ -86,8 +88,11 @@ def task_sampler_args_builder(
             house_index_to_task_specs[task_spec["house_index"]].append(task_spec)
 
         task_spec_sampler = TaskSpecSamplerInfiniteList(
-            house_index_to_task_specs, shuffle=shuffle_task_specs, repeat_house_until_forced=True
-        ) # TODO: should we be shuffling? maybe just have specific rng seed for shuffling
+            house_index_to_task_specs,
+            shuffle=shuffle_task_specs,
+            repeat_house_until_forced=True,
+            house_inds_seed=house_inds_seed,
+        )
     else:
         task_spec_sampler = TaskSpecDatasetList(selected_task_specs)
 
@@ -303,8 +308,8 @@ class BaseConfig(ExperimentConfig, ABC):
             
         group_process_ind = process_ind
         group_total_processes = total_processes
-        shuffle_task_specs = True
         use_grpo = getattr(self.params, "use_grpo", False)
+        house_inds_seed = None
         
         if mode == "train" and use_grpo:
             num_generations = self.params.grpo_num_generations
@@ -321,11 +326,11 @@ class BaseConfig(ExperimentConfig, ABC):
                 ) # TODO actually maybe we dont need this requirement
             group_total_processes = num_workers
             group_process_ind = process_ind // num_generations
-            shuffle_task_specs = False
+            house_inds_seed = group_process_ind
             
         device = devices[group_process_ind % len(devices)] if devices is not None else None
         print(f"Process {process_ind} | Seed: {seed} | Group: {group_process_ind} | Device: {device}"
-              f"| All Devices: {devices} | Total Procs: {group_total_processes} | Shuffle: {shuffle_task_specs}")
+              f"| All Devices: {devices} | Total Processes: {group_total_processes} | House Inds Seed: {house_inds_seed}")
         
         return task_sampler_args_builder(
             process_ind=group_process_ind,
@@ -346,7 +351,8 @@ class BaseConfig(ExperimentConfig, ABC):
             max_houses=self.params.max_houses,
             prob_randomize_materials=0.8 if mode == "train" else 0,
             seed=seed,
-            shuffle_task_specs=shuffle_task_specs,
+            shuffle_task_specs=True,
+            house_inds_seed=house_inds_seed,
         )
 
     def train_task_sampler_args(

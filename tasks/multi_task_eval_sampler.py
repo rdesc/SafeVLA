@@ -38,6 +38,7 @@ class MultiTaskSampler(AbstractSPOCTaskSampler):
         prob_randomize_materials: float = 0,
         task_type: Optional[Type] = None,
         device: Optional[int] = None,
+        task_spec_sampler_state: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**prepare_locals_for_super(locals()))
@@ -60,10 +61,18 @@ class MultiTaskSampler(AbstractSPOCTaskSampler):
             )
 
         self.task_spec_sampler = task_spec_sampler
+        if task_spec_sampler_state is not None:
+            self.task_spec_sampler.load_state_dict(task_spec_sampler_state)
 
         self.visualize = visualize
 
         assert self.mode == "train" or self.prob_randomize_materials == 0
+
+    def state_dict(self) -> Dict[str, Any]:
+        return self.task_spec_sampler.state_dict()
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        self.task_spec_sampler.load_state_dict(state)
 
     @property
     def current_task_spec(self) -> TaskSpec:

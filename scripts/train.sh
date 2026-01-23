@@ -6,6 +6,9 @@ export OBJAVERSE_DATA_DIR=/root/data/objaverse_assets  # change to your own path
 export HF_HOME=/root/huggingface
 export ALLENACT_DEBUG=True
 export ALLENACT_DEBUG_VST_TIMEOUT=2000
+# export NCCL_DEBUG=INFO
+# export NCCL_ASYNC_ERROR_HANDLING=1
+# export TORCH_DISTRIBUTED_DEBUG=DETAIL
 
 # Default values
 task_type=""
@@ -18,6 +21,10 @@ output_dir=""
 dataset_dir=""
 cost_limit=2.31
 max_stage_steps=""
+tag=""
+max_houses=""
+grpo_num_generations=4
+max_steps=""
 
 # Function to print usage
 print_usage() {
@@ -36,6 +43,10 @@ print_usage() {
     echo "  --num_train_processes Number of training processes (default: 32)"
     echo "  --cost_limit          Cost limit (default: 2.31)"
     echo "  --max_stage_steps     Total training steps across pipeline stages (default: use config)"
+    echo "  --max_steps           Max steps per episode (default: use config)"
+    echo "  --tag                 Experiment tag override (default: derived from task_type)"
+    echo "  --max_houses          Max houses to sample (default: use config)"
+    echo "  --grpo_num_generations Number of GRPO generations (default: use config)"
     echo "  --help                Show this help message"
     exit 1
 }
@@ -83,6 +94,22 @@ while [[ $# -gt 0 ]]; do
             max_stage_steps="$2"
             shift 2
             ;;
+        --tag)
+            tag="$2"
+            shift 2
+            ;;
+        --max_steps)
+            max_steps="$2"
+            shift 2
+            ;;
+        --max_houses)
+            max_houses="$2"
+            shift 2
+            ;;
+        --grpo_num_generations)
+            grpo_num_generations="$2"
+            shift 2
+            ;;
         --help)
             print_usage
             ;;
@@ -113,6 +140,39 @@ else
     exit 1
 fi
 
+if [ -z "$tag" ]; then
+    tag="$task_type_internal"
+fi
+
+# Auto-detect latest checkpoint if not provided
+if [ -z "$resume_checkpoint" ]; then
+    base_exp_dir=""
+    for candidate in "$output_dir/$tag" "$output_dir/checkpoints/$tag"; do
+        if [ -d "$candidate" ]; then
+            base_exp_dir="$candidate"
+            break
+        fi
+    done
+
+    if [ -n "$base_exp_dir" ]; then
+        latest_ckpt=""
+        while IFS= read -r -d '' dir; do
+            ckpt_candidate="$(find "$dir" -maxdepth 1 -type f -name "exp*.pt" -printf "%T@ %p\n" 2>/dev/null | sort -nr | head -n 1 | cut -d' ' -f2-)"
+            if [ -n "$ckpt_candidate" ]; then
+                latest_ckpt="$ckpt_candidate"
+                break
+            fi
+        done < <(find "$base_exp_dir" -mindepth 1 -maxdepth 1 -type d -printf "%T@ %p\0" 2>/dev/null | sort -zr | cut -z -d' ' -f2-)
+
+        if [ -n "$latest_ckpt" ]; then
+            resume_checkpoint="$latest_ckpt"
+            echo -e "\nAuto-resuming from latest checkpoint: $resume_checkpoint\n"
+        else
+            echo -e "\nNo checkpoints found under $base_exp_dir\n"
+        fi
+    fi
+fi
+
 # Build the base command
 cmd="python3 training/online/dinov2_vits_tsfm_base.py train \
     --il_ckpt_path $il_ckpt_path \
@@ -120,12 +180,12 @@ cmd="python3 training/online/dinov2_vits_tsfm_base.py train \
     --output_dir $output_dir \
     --dataset_dir $dataset_dir/$task_type_internal \
     --cost_limit $cost_limit \
-    --tag $task_type_internal\
-    --shaping_weight 0.1 \
+    --tag $tag \
     --use_grpo True \
-    --grpo_num_generations 2 \
-    --grpo_beta 0.02 \
-    --max_houses 1000"
+    --grpo_num_generations ${grpo_num_generations} \
+    --max_houses ${max_houses} \
+    --seed 42"
+    # --shaping_weight 0.1 \
 
 # Add checkpoint parameter if provided
 if [ -n "$resume_checkpoint" ]; then
@@ -153,6 +213,11 @@ if [ -n "$max_stage_steps" ]; then
     cmd="$cmd --max_stage_steps $max_stage_steps"
 fi
 
+# Add max_steps if provided
+if [ -n "$max_steps" ]; then
+    cmd="$cmd --max_steps $max_steps"
+fi
+
 # Execute the command
 echo "Executing command:"
 echo "$cmd"
@@ -161,9 +226,6 @@ eval $cmd
 
 
 # TODO: params to add
-# --output_dir
-# --checkpoint
 # --test_expert
-# 
 
 # https://github.com/rdesc/allenact/blob/5c7db0c8b9b425881064768f3f6eb60ad96ecbc4/allenact/main.py

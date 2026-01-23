@@ -359,6 +359,7 @@ class GRPOLogGrad(AbstractActorCriticLoss):
     ):
   
         actions = cast(torch.LongTensor, batch["actions"])
+        print("tensor shape in computing loss:", actions.shape)
         action_log_probs = actor_critic_output.distributions.log_prob(actions)
 
         masks = cast(torch.FloatTensor, batch["masks"])
@@ -406,7 +407,6 @@ class GRPOLogGrad(AbstractActorCriticLoss):
             total_loss,
             {
                 "action": float(action_loss_mean.item()),
-                "group_adv_std": float(group_adv.std(unbiased=False).item()),
                 "group_return_mean": return_mean,
                 "group_return_std": return_std,
                 "rollout_num_steps": actions.shape[0],

@@ -53,7 +53,7 @@ class OnPolicyRunnerMixin(abc.ABC):
         max_sampler_processes_per_worker: Optional[int] = None,
         collect_valid_results: bool = False,
         valid_on_initial_weights: bool = False,
-        enable_crash_recovery: bool = False,
+        enable_crash_recovery: bool = True,
         save_ckpt_at_every_host: bool = False,
     ):
         if checkpoint is None and hasattr(self, 'checkpoint'):

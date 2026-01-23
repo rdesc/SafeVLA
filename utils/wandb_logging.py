@@ -52,6 +52,10 @@ class SimpleWandbLogging(Callback):
                 config=kwargs,
             )
 
+        log_file = os.environ.get("ALLENACT_LOG_FILE")
+        if log_file:
+                wandb.save(log_file, policy="end")
+
     def _define_missing_metrics(
         self,
         metric_means: Dict[str, float],
