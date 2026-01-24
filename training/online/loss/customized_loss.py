@@ -311,17 +311,26 @@ class GRPOLogGrad(AbstractActorCriticLoss):
         # NOTE Optional GRPO variants (entropy regularization, clip decay, action loss schedules)
         # can be added here if we choose to mirror PPO-style training knobs.
 
-    def _episode_advantages(self, returns: torch.Tensor) -> torch.Tensor:
+    def _episode_advantages(self, returns: torch.Tensor, final_time_steps: torch.Tensor) -> Tuple[torch.Tensor, dict]:
         if returns.dim() > 2 and returns.shape[-1] == 1:
             returns = returns.squeeze(-1)
 
         if returns.dim() != 2:
             returns = returns.view(returns.shape[0], returns.shape[1], -1).mean(-1)
 
-        episode_returns = returns[0]
+        episode_returns = torch.tensor([returns[t-1][idx] for idx, t in enumerate(final_time_steps)]).to(returns.device)
+        print("episode returns:", episode_returns)
         mean = episode_returns.mean()
         std = episode_returns.std(unbiased=False)
-        return (episode_returns - mean) / (std + self.group_advantage_eps)
+        return (
+            (episode_returns - mean) / (std + self.group_advantage_eps),
+            {
+                "group_return_mean": float(mean.item()),
+                "group_return_std": float(std.item()),
+                "group_return_max": float(episode_returns.max().item()),
+                "group_return_min": float(episode_returns.min().item()),
+            }
+        )
 
     def _per_step_advantages(
         self, returns: torch.Tensor, masks: torch.Tensor
@@ -357,17 +366,17 @@ class GRPOLogGrad(AbstractActorCriticLoss):
         *args,
         **kwargs,
     ):
-  
         actions = cast(torch.LongTensor, batch["actions"])
         print("tensor shape in computing loss:", actions.shape)
         action_log_probs = actor_critic_output.distributions.log_prob(actions)
 
         masks = cast(torch.FloatTensor, batch["masks"])
+        final_time_steps = batch['observations']['time_step'][-1]
         returns = cast(torch.FloatTensor, batch["returns"])
         if self.per_step_advantage:
             group_adv = self._per_step_advantages(returns=returns, masks=masks)
         else:
-            episode_adv = self._episode_advantages(returns=returns)
+            episode_adv, episode_adv_stats = self._episode_advantages(returns, final_time_steps)
             group_adv = episode_adv.view(1, -1)
             group_adv = _add_trailing_dims(group_adv, masks)
 
@@ -392,24 +401,21 @@ class GRPOLogGrad(AbstractActorCriticLoss):
 
         total_loss = action_loss_mean
 
-        if self.per_step_advantage:
-            flat_mask = masks.reshape(-1).to(dtype=torch.float32)
-            flat_returns = returns.reshape(-1)
-            active_returns = flat_returns[flat_mask > 0]
-            assert active_returns.numel() > 0, "GRPO expected non-empty active returns."
-            return_mean = float(active_returns.mean().item())
-            return_std = float(active_returns.std(unbiased=False).item())
-        else:
-            return_mean = float(returns[0].mean().item())
-            return_std = float(returns[0].std(unbiased=False).item())
+        # if self.per_step_advantage:
+        #     flat_mask = masks.reshape(-1).to(dtype=torch.float32)
+        #     flat_returns = returns.reshape(-1)
+        #     active_returns = flat_returns[flat_mask > 0]
+        #     assert active_returns.numel() > 0, "GRPO expected non-empty active returns."
+        #     return_mean = float(active_returns.mean().item())
+        #     return_std = float(active_returns.std(unbiased=False).item())
 
         return (
             total_loss,
             {
                 "action": float(action_loss_mean.item()),
-                "group_return_mean": return_mean,
-                "group_return_std": return_std,
                 "rollout_num_steps": actions.shape[0],
+                "rollout_avg_num_steps": float(final_time_steps.sum().item() / len(final_time_steps)),
+                **episode_adv_stats
             },
         )
 

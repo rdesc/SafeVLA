@@ -6,6 +6,7 @@ WANDB_PROJECT=safety_chores
 WANDB_ENTITY=rdesc1-milaquebec
 VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json
 TORCH_HOME=/home/mila/d/deschaer/.cache/torch/hub
+OUTPUT_DIR=/network/scratch/d/deschaer/SafeVLA/data/models/
 
 rm ~/.ai2thor/cuda-vulkan-mapping.json # remove cache to fixe multi-gpu issues
 
@@ -16,6 +17,7 @@ singularity shell --nv --cleanenv \
   --bind ${DATA_PATH}:/root/data \
   --bind ${HF_HOME}:/root/huggingface \
   --bind ${TORCH_HOME}:/root/torch_cache \
+  --bind ${OUTPUT_DIR}:/root/output_dir \
   --env WANDB_PROJECT=${WANDB_PROJECT} \
   --env WANDB_ENTITY=${WANDB_ENTITY} \
   --env VK_ICD_FILENAMES=${VK_ICD_FILENAMES} \
