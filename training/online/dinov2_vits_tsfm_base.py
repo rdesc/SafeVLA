@@ -77,7 +77,7 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     rgb_width: int = 384
 
     # training pipeline params
-    save_interval: int = 50_000
+    save_interval: int = 10_000
     log_metric_accumulate_interval: int = 1_000
 
     # overwrite the BaseConfigParams tag
