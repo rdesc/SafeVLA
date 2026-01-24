@@ -2,8 +2,8 @@
 #SBATCH --job-name=safevla-train
 #SBATCH --output=slurm_logs/slurm-%j.out
 #SBATCH --error=slurm_logs/slurm-%j.err
-#SBATCH -c 24
-#SBATCH --mem=128G
+#SBATCH -c 64
+#SBATCH --mem=512G
 #SBATCH --time=03:00:00
 #SBATCH --requeue
 #SBATCH --gres=gpu:a100l:4
@@ -46,8 +46,8 @@ singularity exec --nv --cleanenv \
     --il_ckpt_path /root/data/models/spoc_IL/model.ckpt \
     --output_dir ${OUTPUT_DIR} \
     --dataset_dir /root/data/training_data/astar/ \
-    --num_train_processes 24 \
-    --grpo_num_generations 6 \
+    --num_train_processes 16 \
+    --grpo_num_generations 4 \
     --tag ${EXP_NAME} \
     --max_stage_steps 10000000 \
     --max_steps 300"
