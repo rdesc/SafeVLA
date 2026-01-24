@@ -183,7 +183,6 @@ cmd="python3 training/online/dinov2_vits_tsfm_base.py train \
     --tag $tag \
     --use_grpo True \
     --grpo_num_generations ${grpo_num_generations} \
-    --max_houses ${max_houses} \
     --seed 42"
     # --shaping_weight 0.1 \
 
@@ -216,6 +215,11 @@ fi
 # Add max_steps if provided
 if [ -n "$max_steps" ]; then
     cmd="$cmd --max_steps $max_steps"
+fi
+
+# Add max_houses if provided
+if [ -n "$max_houses" ]; then
+    cmd="$cmd --max_houses $max_houses"
 fi
 
 # Execute the command

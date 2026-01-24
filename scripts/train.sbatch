@@ -8,10 +8,11 @@
 #SBATCH --requeue
 #SBATCH --gres=gpu:a100l:4
 #SBATCH --partition=short-unkillable
+#SBATCH --exclude=cn-g[001-007,009-010,014,017-020,022,024,027]
 
 set -euo pipefail
 
-EXP_NAME=vanilla_grpo_objnav_gen_4
+EXP_NAME=vanilla_grpo_objnav_num_gens_6
 OUTPUT_DIR=/root/data/models/  # path inside the container
 CODE_PATH=/network/scratch/d/deschaer/SafeVLA/
 DATA_PATH=/network/scratch/d/deschaer/SafeVLA/data
@@ -38,7 +39,6 @@ singularity exec --nv --cleanenv \
   --env OBJAVERSE_HOUSES_DIR=/root/data/objaverse_houses \
   --env OBJAVERSE_DATA_DIR=/root/data/objaverse_assets \
   --env PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-  --env CUDA_LAUNCH_BLOCKING=1 \
   --env TORCH_CUDNN_V8_API_ENABLED=1 \
   ${CODE_PATH}/safevla.sif \
   /bin/bash -lc "cd /root/SafeVLA && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train.sh \
@@ -46,7 +46,8 @@ singularity exec --nv --cleanenv \
     --il_ckpt_path /root/data/models/spoc_IL/model.ckpt \
     --output_dir ${OUTPUT_DIR} \
     --dataset_dir /root/data/training_data/astar/ \
-    --num_train_processes 16 \
+    --num_train_processes 24 \
+    --grpo_num_generations 6 \
     --tag ${EXP_NAME} \
-    --max_houses 500 \
-    --max_stage_steps 500"
+    --max_stage_steps 10000000 \
+    --max_steps 300"
