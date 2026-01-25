@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-EXP_NAME=vanilla_grpo_objnav_num_gens_6
+EXP_NAME=vanilla_grpo_objnav_num_gens_4_fixed
 OUTPUT_DIR=/root/data/models/  # path inside the container
 CODE_PATH=/network/scratch/d/deschaer/SafeVLA/
 DATA_PATH=/network/scratch/d/deschaer/SafeVLA/data
@@ -49,5 +49,6 @@ singularity exec --nv --cleanenv \
     --num_train_processes 16 \
     --grpo_num_generations 4 \
     --tag ${EXP_NAME} \
-    --max_stage_steps 10000000 \
-    --max_steps 300"
+    --max_stage_steps 2000000 \
+    --max_steps 500"
+    # --max_houses 10000"
