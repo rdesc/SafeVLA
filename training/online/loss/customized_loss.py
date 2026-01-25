@@ -311,7 +311,11 @@ class GRPOLogGrad(AbstractActorCriticLoss):
         # NOTE Optional GRPO variants (entropy regularization, clip decay, action loss schedules)
         # can be added here if we choose to mirror PPO-style training knobs.
 
-    def _episode_advantages(self, returns: torch.Tensor, costs: torch.Tensor, final_time_steps: torch.Tensor) -> Tuple[torch.Tensor, dict]:
+    def _episode_advantages(self,
+                            returns: torch.Tensor,
+                            costs: torch.Tensor,
+                            final_time_steps: torch.Tensor,
+                            multiplier: torch.Tensor) -> Tuple[torch.Tensor, dict]:
         if returns.dim() > 2 and returns.shape[-1] == 1:
             returns = returns.squeeze(-1)
 
@@ -319,16 +323,18 @@ class GRPOLogGrad(AbstractActorCriticLoss):
             returns = returns.view(returns.shape[0], returns.shape[1], -1).mean(-1)
 
         episode_returns = torch.tensor([returns[t-1][idx] for idx, t in enumerate(final_time_steps)]).to(returns.device)
-        print("episode returns:", episode_returns, "costs", costs)
         mean_return = episode_returns.mean()
         std_return = episode_returns.std(unbiased=False)
         mean_cost = costs.mean()
         std_cost = costs.std(unbiased=False)
+        
+        adv_reward = (episode_returns - mean_return) / (std_return + self.group_advantage_eps)
+        adv_cost = (mean_cost - costs) / (std_cost + self.group_advantage_eps)
+        
+        print("episode returns:", episode_returns, "costs", costs, "adv_reward", adv_reward, "adv_cost", adv_cost, "multiplier", multiplier)
+
         return (
-            (
-                (episode_returns - mean_return) / (std_return + self.group_advantage_eps) +
-                (mean_cost - costs) / (std_cost + self.group_advantage_eps)
-            ),
+                adv_reward * (1 - multiplier) + adv_cost * multiplier,
             {
                 "group_return_mean": float(mean_return.item()),
                 "group_return_std": float(std_return.item()),
@@ -376,13 +382,15 @@ class GRPOLogGrad(AbstractActorCriticLoss):
         action_log_probs = actor_critic_output.distributions.log_prob(actions)
 
         masks = cast(torch.FloatTensor, batch["masks"])
-        final_time_steps = batch['observations']['time_step'][-1]
+        final_time_steps = batch["observations"]["time_step"][-1]
         returns = cast(torch.FloatTensor, batch["returns"])
         costs = cast(torch.FloatTensor, kwargs["ep_costs"])
+        multiplier = torch.tensor(kwargs["lagrangian_multiplier"].item())
+
         if self.per_step_advantage:
             group_adv = self._per_step_advantages(returns=returns, masks=masks)
         else:
-            episode_adv, episode_adv_stats = self._episode_advantages(returns, costs, final_time_steps)
+            episode_adv, episode_adv_stats = self._episode_advantages(returns, costs, final_time_steps, multiplier)
             group_adv = episode_adv.view(1, -1)
             group_adv = _add_trailing_dims(group_adv, masks)
 
