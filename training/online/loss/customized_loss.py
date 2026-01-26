@@ -433,6 +433,8 @@ class GRPOLogGrad(AbstractActorCriticLoss):
                 "action": float(action_loss_mean.item()),
                 "rollout_num_steps": actions.shape[0],
                 "rollout_avg_num_steps": float(final_time_steps.sum().item() / len(final_time_steps)),
+                "multiplier": float(multiplier.item()),
+                "multiplier_raw": float(kwargs["multiplier_raw"].item()),
                 **episode_adv_stats
             },
         )

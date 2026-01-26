@@ -25,6 +25,7 @@ tag=""
 max_houses=""
 grpo_num_generations=4
 max_steps=""
+step_penalty=""
 
 # Function to print usage
 print_usage() {
@@ -47,6 +48,7 @@ print_usage() {
     echo "  --tag                 Experiment tag override (default: derived from task_type)"
     echo "  --max_houses          Max houses to sample (default: use config)"
     echo "  --grpo_num_generations Number of GRPO generations (default: use config)"
+    echo "  --step_penalty        Step penalty reward (default: use config)"
     echo "  --help                Show this help message"
     exit 1
 }
@@ -108,6 +110,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --grpo_num_generations)
             grpo_num_generations="$2"
+            shift 2
+            ;;
+        --step_penalty)
+            step_penalty="$2"
             shift 2
             ;;
         --help)
@@ -184,7 +190,8 @@ cmd="python3 training/online/dinov2_vits_tsfm_base.py train \
     --use_grpo True \
     --grpo_num_generations ${grpo_num_generations} \
     --seed 42 \
-    --enable_lagrange False"
+    --shaping_weight 0.1"
+    # --enable_lagrange True"
     # --shaping_weight 0.1 \
 
 # Add checkpoint parameter if provided
@@ -193,10 +200,10 @@ if [ -n "$resume_checkpoint" ]; then
 fi
 
 # Get wandb project and entity from environment variables if not provided
-if [ -z "$wandb_project" ]; then
+if [ -z "$wandb_project" ] && [ "$WANDB_DISABLED" != "True" ]; then
     wandb_project="${WANDB_PROJECT:-}"
 fi
-if [ -z "$wandb_entity" ]; then
+if [ -z "$wandb_entity" ] && [ "$WANDB_DISABLED" != "True" ]; then
     wandb_entity="${WANDB_ENTITY:-}"
 fi
 
@@ -216,6 +223,11 @@ fi
 # Add max_steps if provided
 if [ -n "$max_steps" ]; then
     cmd="$cmd --max_steps $max_steps"
+fi
+
+# Add step_penalty if provided
+if [ -n "$step_penalty" ]; then
+    cmd="$cmd --step_penalty $step_penalty"
 fi
 
 # Add max_houses if provided

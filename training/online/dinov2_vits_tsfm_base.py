@@ -70,7 +70,8 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     wandb_entity: str = ""
     collision_penalty: float = -0.00
     lr: float = 2e-5
-    shaping_weight: float = 0.0
+    shaping_weight: float = 0.0  # used in e.g. ObjectNavRewardShaper
+    step_penalty: float = 0.0  # e.g. -0.01
 
     # preprocess params
     rgb_height: int = 224
@@ -117,10 +118,10 @@ class DinoV2ViTSTSFMBase(BaseConfig):
 
     def make_sampler_fn(self, **kwargs):
         kwargs["task_args"]["reward_config"] = RewardConfig(
-            step_penalty=0.00,
+            step_penalty=self.params.step_penalty,  # -0.01
             goal_success_reward=10.0,
             failed_stop_reward=0.0,
-            shaping_weight=self.params.shaping_weight,
+            shaping_weight=self.params.shaping_weight,  # 1.0
             reached_horizon_reward=0.0,
             positive_only_reward=False,
             failed_action_penalty=self.params.collision_penalty,

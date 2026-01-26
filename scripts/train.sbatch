@@ -12,8 +12,8 @@
 
 set -euo pipefail
 
-EXP_NAME=vanilla_grpo_objnav_num_gens_4_fixed
-OUTPUT_DIR=/root/data/models/  # path inside the container
+EXP_NAME=constrained_grpo_objnav_num_gens_4_test_01
+OUTPUT_DIR=/network/scratch/d/deschaer/SafeVLA/data/models/
 CODE_PATH=/network/scratch/d/deschaer/SafeVLA/
 DATA_PATH=/network/scratch/d/deschaer/SafeVLA/data
 WANDB_PROJECT=safety_chores
@@ -30,6 +30,7 @@ singularity exec --nv --cleanenv \
   --bind ${CODE_PATH}:/root/SafeVLA \
   --bind ${DATA_PATH}:/root/data \
   --bind ${HF_HOME}:/root/huggingface \
+  --bind ${OUTPUT_DIR}:/root/output_dir \
   --bind ${TORCH_HOME}:/root/torch_cache \
   --env TORCH_HOME=/root/torch_cache \
   --env WANDB_PROJECT=${WANDB_PROJECT} \
@@ -44,7 +45,7 @@ singularity exec --nv --cleanenv \
   /bin/bash -lc "cd /root/SafeVLA && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train.sh \
     --task_type objectnav \
     --il_ckpt_path /root/data/models/spoc_IL/model.ckpt \
-    --output_dir ${OUTPUT_DIR} \
+    --output_dir /root/output_dir/ \
     --dataset_dir /root/data/training_data/astar/ \
     --num_train_processes 16 \
     --grpo_num_generations 4 \
