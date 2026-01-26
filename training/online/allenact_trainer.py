@@ -20,6 +20,10 @@ class OnPolicyRunnerMixin(abc.ABC):
     machine_id: int = 0
     callbacks: str = ""
     cost_limit: float = None
+    enable_lagrange: bool = False
+    lagrangian_multiplier_init: float = 0.001
+    lambda_lr: float = 0.035
+    lambda_optimizer: str = "Adam"
     checkpoint: Optional[str] = None
 
     @abc.abstractmethod
@@ -69,6 +73,10 @@ class OnPolicyRunnerMixin(abc.ABC):
             try_restart_after_task_error=enable_crash_recovery,
             save_ckpt_at_every_host=save_ckpt_at_every_host,
             cost_limit=self.cost_limit,
+            enable_lagrange=self.enable_lagrange,
+            lagrangian_multiplier_init=self.lagrangian_multiplier_init,
+            lambda_lr=self.lambda_lr,
+            lambda_optimizer=self.lambda_optimizer,
         )
 
     def test(

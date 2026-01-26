@@ -183,7 +183,8 @@ cmd="python3 training/online/dinov2_vits_tsfm_base.py train \
     --tag $tag \
     --use_grpo True \
     --grpo_num_generations ${grpo_num_generations} \
-    --seed 42"
+    --seed 42 \
+    --enable_lagrange False"
     # --shaping_weight 0.1 \
 
 # Add checkpoint parameter if provided

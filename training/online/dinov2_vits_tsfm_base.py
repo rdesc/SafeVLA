@@ -59,7 +59,7 @@ from training.online.loss.customized_loss import GRPOLogGrad, PPOLogGrad, SafePP
 
 @dataclass
 class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
-    use_data_augmentation: bool = True
+    use_data_augmentation: bool = False
     use_text_goal: bool = True
     use_bbox: bool = False
     traj_max_index: int = 2048
@@ -77,7 +77,7 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     rgb_width: int = 384
 
     # training pipeline params
-    save_interval: int = 10_000
+    save_interval: int = 30_000
     log_metric_accumulate_interval: int = 1_000
 
     # overwrite the BaseConfigParams tag
@@ -101,6 +101,10 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     gamma: float = 0.99
     gae_lambda: float = 0.95
 
+    enable_lagrange: bool = True
+    lagrangian_multiplier_init: float = 0.001
+    lambda_lr: float = 0.035
+    lambda_optimizer: str = "Adam"
 
 class DinoV2ViTSTSFMBase(BaseConfig):
 
