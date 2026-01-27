@@ -1,9 +1,17 @@
 #!/bin/bash
 
-export PYTHONPATH=/path/to/SafeVLA # change to your own path
-export OBJAVERSE_HOUSES_DIR=/path/to/objaverse_houses  # change to your own path
-export OBJAVERSE_DATA_DIR=/path/to/objaverse_assets  # change to your own path
-export HF_ENDPOINT=https://hf-mirror.com
+# export PYTHONPATH=$PYTHONPATH:/root/SafeVLA/old_repo/SafeVLA# change to your own path
+# export OBJAVERSE_HOUSES_DIR=/path/to/objaverse_houses  # change to your own path
+# export OBJAVERSE_DATA_DIR=/path/to/objaverse_assets  # change to your own path
+# export HF_ENDPOINT=https://hf-mirror.com
+# export ALLENACT_DEBUG=True
+# export ALLENACT_DEBUG_VST_TIMEOUT=2000
+
+
+export PYTHONPATH=/root/SafeVLA/old_repo/SafeVLA/allenact:$PYTHONPATH:/root/SafeVLA/old_repo/SafeVLA  # change to your own path
+export OBJAVERSE_HOUSES_DIR=/root/data/objaverse_houses  # change to your own path
+export OBJAVERSE_DATA_DIR=/root/data/objaverse_assets  # change to your own path
+export HF_HOME=/root/huggingface
 export ALLENACT_DEBUG=True
 export ALLENACT_DEBUG_VST_TIMEOUT=2000
 
@@ -108,13 +116,16 @@ else
 fi
 
 # Build the base command
-cmd="python training/online/dinov2_vits_tsfm_base.py train \
+cmd="python3 training/online/dinov2_vits_tsfm_base.py train \
     --il_ckpt_path $il_ckpt_path \
     --num_train_processes $num_train_processes \
     --output_dir $output_dir \
     --dataset_dir $dataset_dir/$task_type_internal \
     --cost_limit $cost_limit \
-    --tag $task_type_internal"
+    --tag ObjNav_debug_rod_orig_safevla_grpo \
+    --max_houses 12 \
+    --max_steps 500 \
+    --use_grpo True"
 
 # Add checkpoint parameter if provided
 if [ -n "$resume_checkpoint" ]; then

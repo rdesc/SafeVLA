@@ -59,7 +59,7 @@ from training.online.loss.customized_loss import PPOLogGrad, SafePPOLogGrad
 
 @dataclass
 class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
-    use_data_augmentation: bool = True
+    use_data_augmentation: bool = False
     use_text_goal: bool = True
     use_bbox: bool = False
     traj_max_index: int = 2048
@@ -77,7 +77,7 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
 
     # training pipeline params
     save_interval: int = 50_000
-    metric_accumulate_interval: int = 1_000
+    metric_accumulate_interval: int = 100
 
     # overwrite the BaseConfigParams tag
     tag: str = "SafeVLA-ObjectNavType-RL-DinoV2-ViTS-TSFM"
@@ -86,6 +86,8 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     full_sensor: bool = True
 
     il_ckpt_path: Optional[str] = None
+    
+    use_grpo: bool = False
 
 
 class DinoV2ViTSTSFMBase(BaseConfig):
@@ -218,7 +220,7 @@ class DinoV2ViTSTSFMBase(BaseConfig):
             None,
         )
 
-        if self.params.use_sep_critic:
+        if self.params.use_sep_critic and not self.params.use_grpo:
             # model_init_func = DinoLLAMATxNavActorCriticSeparate
             model_init_func = SafeDinoLLAMATxNavActorCriticSeparate
         else:
@@ -267,6 +269,7 @@ class DinoV2ViTSTSFMBase(BaseConfig):
                 "nav_accurate_object_bbox" if self.params.use_bbox else None
             ),
             prev_checkpoint=self.params.il_ckpt_path,
+            critic_type="none" if self.params.use_grpo else "linear",
         )
 
         non_nav_action_inds = [
@@ -307,7 +310,7 @@ class DinoV2ViTSTSFMBase(BaseConfig):
             else 1
         )
 
-        batch_steps_0 = int(200000)
+        batch_steps_0 = int(20000)
         batch_steps_1 = int(800000)
         batch_steps_2 = int(1e9) - batch_steps_1 - batch_steps_0
 
@@ -346,22 +349,22 @@ class DinoV2ViTSTSFMBase(BaseConfig):
             use_gae=True,
             gae_lambda=0.95,
             pipeline_stages=[
-                PipelineStage(
-                    loss_names=["ppo_value_loss", "safe_ppo_value_loss"],
-                    max_stage_steps=batch_steps_0,
-                    training_settings=TrainingSettings(
-                        num_steps=128,
-                        metric_accumulate_interval=log_interval_small,
-                        advance_scene_rollout_period=self.params.steps_in_house_before_force_scene_advance
-                        // 128,
-                    ),
-                ),
+                # PipelineStage(
+                #     loss_names=["ppo_value_loss", "safe_ppo_value_loss"],
+                #     max_stage_steps=batch_steps_0,
+                #     training_settings=TrainingSettings(
+                #         num_steps=500,
+                #         metric_accumulate_interval=10,
+                #         advance_scene_rollout_period=self.params.steps_in_house_before_force_scene_advance
+                #         // 128,
+                #     ),
+                # ),
                 PipelineStage(
                     loss_names=["ppo_log_loss"],
                     max_stage_steps=batch_steps_1,
                     training_settings=TrainingSettings(
-                        num_steps=128,
-                        metric_accumulate_interval=log_interval_medium,
+                        num_steps=300,
+                        metric_accumulate_interval=10,
                         advance_scene_rollout_period=self.params.steps_in_house_before_force_scene_advance
                         // 128,
                     ),
@@ -370,8 +373,8 @@ class DinoV2ViTSTSFMBase(BaseConfig):
                     loss_names=["ppo_log_loss"],
                     max_stage_steps=batch_steps_2,
                     training_settings=TrainingSettings(
-                        num_steps=128,
-                        metric_accumulate_interval=log_interval_large,
+                        num_steps=500,
+                        metric_accumulate_interval=10,
                         advance_scene_rollout_period=self.params.steps_in_house_before_force_scene_advance
                         // 128,
                     ),

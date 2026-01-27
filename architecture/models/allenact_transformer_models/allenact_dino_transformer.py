@@ -19,7 +19,7 @@ from allenact.algorithms.onpolicy_sync.policy import (
     LinearCriticHead,
     ObservationType,
 )
-from allenact.base_abstractions.misc import ActorCriticOutput, Memory
+from allenact.base_abstractions.misc import SafeActorCriticOutput, ActorCriticOutput, Memory
 from allenact.embodiedai.aux_losses.losses import MultiAuxTaskNegEntropyLoss
 from allenact.embodiedai.models.visual_nav_models import (
     FusionType,
@@ -157,6 +157,8 @@ class DinoLLAMATxNavActorCritic(VisualNavActorCritic):
             self.critic = DiscreteCriticHead(
                 self._hidden_size, bin_size=101, loss_fn=dc_loss
             )
+        elif critic_type == "none":
+            self.critic = None
         else:
             print(f"Unknown critic type: {critic_type}")
             raise NotImplementedError
@@ -437,7 +439,7 @@ class DinoLLAMATxNavActorCritic(VisualNavActorCritic):
             extras["loss_func"] = self.critic.loss_fn
             values, full_logits = self.critic(beliefs)
             extras["full_logits"] = full_logits
-        else:
+        elif self.critic is not None:
             stop_grad_values = self.critic(beliefs.detach())
             extras["stop_grad_values"] = stop_grad_values
             values = self.critic(beliefs)
@@ -453,7 +455,7 @@ class DinoLLAMATxNavActorCritic(VisualNavActorCritic):
                 if self.critic.fc.weight.grad is not None:
                     weight_grad_norm = self.critic.fc.weight.grad.detach().data.norm(2)
                     extras["weight_grad_norm"] = torch.Tensor([weight_grad_norm])
-        else:
+        elif self.critic is not None:
             with torch.no_grad():
                 weight_norm = self.critic.fc[-1].weight.data.norm(2)
                 extras["weight_norm"] = torch.Tensor([weight_norm])
@@ -466,12 +468,21 @@ class DinoLLAMATxNavActorCritic(VisualNavActorCritic):
                         self.critic.fc[-1].weight.grad.detach().data.norm(2)
                     )
                     extras["weight_grad_norm"] = torch.Tensor([weight_grad_norm])
-
-        actor_critic_output = ActorCriticOutput(
-            distributions=self.actor(beliefs),
-            values=values,
-            extras=extras,
-        )
+                    
+        if self.critic is None:
+            actor_critic_output = SafeActorCriticOutput(
+                distributions=self.actor(beliefs),
+                values=beliefs.new_zeros(beliefs.shape[0], beliefs.shape[1], 1),
+                c_values=beliefs.new_zeros(beliefs.shape[0], beliefs.shape[1], 1),
+                extras=extras,
+            )
+        else:
+            actor_critic_output = ActorCriticOutput(
+                distributions=self.actor(beliefs),
+                values=values,
+                extras=extras,
+            )
+            
         return actor_critic_output, memory
 
 

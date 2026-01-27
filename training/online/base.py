@@ -62,17 +62,21 @@ def task_sampler_args_builder(
         selected_houses = partitioner.houses_for_curr_process
         selected_house_inds = partitioner.house_inds_for_curr_process
     elif isinstance(task_specs, Hdf5TaskSpecs):
-        assert (
-            task_specs.proc_id == process_ind
-        ), f"Hdf5TaskSpecs.proc_id ({task_specs.proc_id}) must match process_ind ({process_ind})"
-        assert (
-            task_specs.total_procs == total_processes
-        ), f"Hdf5TaskSpecs.total_procs ({task_specs.total_procs}) must match total_processes ({total_processes})"
-        selected_task_specs = task_specs
+        # assert (
+        #     task_specs.proc_id == process_ind
+        # ), f"Hdf5TaskSpecs.proc_id ({task_specs.proc_id}) must match process_ind ({process_ind})"
+        # assert (
+        #     task_specs.total_procs == total_processes
+        # ), f"Hdf5TaskSpecs.total_procs ({task_specs.total_procs}) must match total_processes ({total_processes})"
+        selected_task_specs = [task_specs[0]]
         selected_house_inds = [
             task_spec["house_index"] for task_spec in selected_task_specs
         ]
         selected_houses = houses.select(selected_house_inds)
+        assert len(selected_house_inds) > 0, "No house indices found in selected task specs!"
+        print("selected_houses", selected_houses, "selected_house_inds", selected_house_inds)
+        
+
     else:
         raise NotImplementedError(
             f"task_specs must be LazyJsonTaskSpecs or Hdf5TaskSpecs not {type(task_specs)}"
@@ -112,7 +116,7 @@ def task_sampler_args_builder(
         "controller_args": controller_args,
         "controller_type": controller_type,
         "device": device,
-        "visualize": False,
+        "visualize": True,
         "always_allocate_a_new_stretch_controller_when_reset": True,
         "retain_agent_pose": False,
         "prob_randomize_materials": prob_randomize_materials,
@@ -126,7 +130,7 @@ class BaseConfigParams:
     distributed_nodes: int = 1
     test_on_validation: bool = True
     dataset_dir: str = "data/fifteen/ObjectNavType"
-    max_steps: int = 500
+    max_steps: int = 300
     max_houses: Optional[int] = None
     max_task_specs: Optional[int] = None
     tag: str = "ObjectNavType-RL"
@@ -307,7 +311,7 @@ class BaseConfig(ExperimentConfig, ABC):
             deterministic_cudnn=deterministic_cudnn,
             mode=mode,
             task_specs=self.get_task_specs(
-                subset=mode, process_ind=process_ind, total_processes=total_processes
+                subset=mode, process_ind=None, total_processes=None
             ),
             houses=self.houses[mode],
             on_server=torch.cuda.is_available(),
@@ -315,7 +319,7 @@ class BaseConfig(ExperimentConfig, ABC):
             action_names=ALL_STRETCH_ACTIONS,
             max_steps=self.params.max_steps,
             max_houses=self.params.max_houses,
-            prob_randomize_materials=0.8 if mode == "train" else 0,
+            prob_randomize_materials=0, # 0.8 if mode == "train" else 0,
             seed=seed,
         )
 
