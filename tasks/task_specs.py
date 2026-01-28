@@ -54,6 +54,12 @@ class TaskSpecSampler(abc.ABC):
     def reset(self):
         raise NotImplementedError
 
+    def state_dict(self) -> Dict[str, Any]:
+        return {}
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        return None
+
 
 class TaskSpecSamplerDatasetWrapper(TaskSpecSampler):
     def __init__(self, task_spec_dataset: TaskSpecDataset):
@@ -82,6 +88,16 @@ class TaskSpecSamplerDatasetWrapper(TaskSpecSampler):
     def reset(self):
         self.dataset_iterator_index = -1
         self.last_task_spec: Optional[TaskSpec] = None
+
+    def state_dict(self) -> Dict[str, Any]:
+        return {
+            "dataset_iterator_index": self.dataset_iterator_index,
+            "last_task_spec": self.last_task_spec,
+        }
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        self.dataset_iterator_index = state.get("dataset_iterator_index", -1)
+        self.last_task_spec = state.get("last_task_spec", None)
 
 
 class TaskSpecDatasetList(TaskSpecDataset):
@@ -145,6 +161,24 @@ class TaskSpecDatasetInfiniteList(TaskSpecDataset):
     def __len__(self) -> Union[int, float]:
         return float("inf")
 
+    def state_dict(self) -> Dict[str, Any]:
+        return {
+            "task_specs": self.task_specs,
+            "last_task_spec": self.last_task_spec,
+            "last_index": self.last_index,
+            "python_random_state": (
+                random.getstate() if self.shuffle else None
+            ),
+        }
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        self.task_specs = state.get("task_specs", [])
+        self.last_task_spec = state.get("last_task_spec", None)
+        self.last_index = state.get("last_index", -1)
+        python_random_state = state.get("python_random_state")
+        if python_random_state is not None:
+            random.setstate(python_random_state)
+
 
 class TaskSpecSamplerInfiniteList(TaskSpecSampler):
     def __init__(
@@ -152,9 +186,13 @@ class TaskSpecSamplerInfiniteList(TaskSpecSampler):
         house_index_to_task_specs: Dict[int, List[TaskSpec]],
         shuffle: bool,
         repeat_house_until_forced: bool,
+        house_inds_seed: Optional[int] = None,
     ) -> None:
         self.shuffle = shuffle
         self.repeat_house_until_forced = repeat_house_until_forced
+        self.house_inds_rng = (
+            random.Random(house_inds_seed) if house_inds_seed is not None else None
+        )
 
         self.house_index_to_task_specs = {**house_index_to_task_specs}
         assert all(len(v) != 0 for v in self.house_index_to_task_specs.values())
@@ -165,10 +203,14 @@ class TaskSpecSamplerInfiniteList(TaskSpecSampler):
         self.last_task_spec = None
 
     def reset_houses_inds_list(self):
+        print("Resetting house inds list")
         self.house_inds = list(self.house_index_to_task_specs.keys())
 
         if self.shuffle:
-            random.shuffle(self.house_inds)
+            if self.house_inds_rng is not None:
+                self.house_inds_rng.shuffle(self.house_inds)
+            else:
+                random.shuffle(self.house_inds)
 
     def advance_house(self, force_advance_scene: bool, house_index: Optional[int]):
         if len(self.house_inds) == 0:
@@ -190,7 +232,7 @@ class TaskSpecSamplerInfiniteList(TaskSpecSampler):
             or self.current_house_ind is None
             or not self.repeat_house_until_forced
         ):
-            self.current_house_ind = self.house_inds.pop()
+            self.current_house_ind = self.house_inds.pop(0)
         else:
             # If we're not being forced to advance, and we're repeating houses, then do nothing
             pass
@@ -200,7 +242,10 @@ class TaskSpecSamplerInfiniteList(TaskSpecSampler):
         ]
 
         if self.shuffle:
-            random.shuffle(self.specs_for_current_house)
+            if self.house_inds_rng is not None:
+                self.house_inds_rng.shuffle(self.specs_for_current_house)
+            else:
+                random.shuffle(self.specs_for_current_house)
 
     def next_task_spec(
         self, force_advance_scene: bool = False, house_index: Optional[int] = None
@@ -214,7 +259,7 @@ class TaskSpecSamplerInfiniteList(TaskSpecSampler):
                 force_advance_scene=force_advance_scene, house_index=house_index
             )
 
-        self.last_task_spec = map_task_spec(self.specs_for_current_house.pop())
+        self.last_task_spec = map_task_spec(self.specs_for_current_house.pop(0))
         return self.last_task_spec
 
     def __len__(self) -> Union[int, float]:
@@ -228,6 +273,36 @@ class TaskSpecSamplerInfiniteList(TaskSpecSampler):
         self.house_inds.clear()
         self.current_house_ind = None
         self.last_task_spec = None
+
+    def state_dict(self) -> Dict[str, Any]:
+        return {
+            "house_inds": self.house_inds,
+            "current_house_ind": self.current_house_ind,
+            "specs_for_current_house": self.specs_for_current_house,
+            "last_task_spec": self.last_task_spec,
+            "house_inds_rng_state": (
+                self.house_inds_rng.getstate() if self.house_inds_rng is not None else None
+            ),
+            "python_random_state": (
+                random.getstate() if self.house_inds_rng is None else None
+            ),
+        }
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        self.house_inds = state.get("house_inds", [])
+        self.current_house_ind = state.get("current_house_ind", None)
+        self.specs_for_current_house = state.get("specs_for_current_house", [])
+        self.last_task_spec = state.get("last_task_spec", None)
+
+        rng_state = state.get("house_inds_rng_state", None)
+        if rng_state is not None:
+            if self.house_inds_rng is None:
+                self.house_inds_rng = random.Random()
+            self.house_inds_rng.setstate(rng_state)
+
+        python_random_state = state.get("python_random_state", None)
+        if python_random_state is not None:
+            random.setstate(python_random_state)
 
 
 class TaskSpecQueue(TaskSpecSampler):

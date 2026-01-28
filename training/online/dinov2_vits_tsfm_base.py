@@ -86,8 +86,25 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     full_sensor: bool = True
 
     il_ckpt_path: Optional[str] = None
-    
     use_grpo: bool = False
+    grpo_num_generations: int = 4
+    grpo_beta: float = 0.0  # NOTE: not implemented
+    grpo_clip_param: float = 0.1
+    grpo_group_advantage_eps: float = 1e-5
+    grpo_per_step_advantage: bool = False
+    max_stage_steps: int = int(1e9)
+    
+    num_mini_batch: int = 1
+    update_repeats: int = 4  # number of iterations per update
+    max_grad_norm: float = 0.5
+    gamma: float = 1.0
+    gae_lambda: float = 0.95
+
+    enable_lagrange: bool = False
+    lagrangian_multiplier_init: float = 0.001
+    lambda_lr: float = 0.035
+    lambda_optimizer: str = "Adam"
+    
 
 
 class DinoV2ViTSTSFMBase(BaseConfig):

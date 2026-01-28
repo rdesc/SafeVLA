@@ -43,6 +43,8 @@ def task_sampler_args_builder(
     devices: Optional[List[int]] = None,
     max_houses: Optional[int] = None,
     seed: Optional[int] = None,
+    shuffle_task_specs: Optional[bool] = None,
+    house_inds_seed: Optional[int] = None,
 ):
     assert on_server or max_houses is not None, (
         "max_houses must be provided if not on server. "
@@ -62,22 +64,18 @@ def task_sampler_args_builder(
         selected_houses = partitioner.houses_for_curr_process
         selected_house_inds = partitioner.house_inds_for_curr_process
     elif isinstance(task_specs, Hdf5TaskSpecs):
-        # assert (
-        #     task_specs.proc_id == process_ind
-        # ), f"Hdf5TaskSpecs.proc_id ({task_specs.proc_id}) must match process_ind ({process_ind})"
-        # assert (
-        #     task_specs.total_procs == total_processes
-        # ), f"Hdf5TaskSpecs.total_procs ({task_specs.total_procs}) must match total_processes ({total_processes})"
-        # selected_task_specs = [task_specs[0]]
-        selected_task_specs = task_specs[:25]
+        assert (
+            task_specs.proc_id == process_ind
+        ), f"Hdf5TaskSpecs.proc_id ({task_specs.proc_id}) must match process_ind ({process_ind})"
+        assert (
+            task_specs.total_procs == total_processes
+        ), f"Hdf5TaskSpecs.total_procs ({task_specs.total_procs}) must match total_processes ({total_processes})"
+        selected_task_specs = task_specs
         selected_house_inds = [
-            task_spec["house_index"] for task_spec in selected_task_specs
+            task_spec["house_index"] for task_spec in selected_task_specs #  if int(task_spec["house_index"]) != 76
         ]
-        selected_houses = houses.select(selected_house_inds)
         assert len(selected_house_inds) > 0, "No house indices found in selected task specs!"
-        print("selected_houses", selected_houses, "selected_house_inds", selected_house_inds)
-        
-
+        selected_houses = houses.select(selected_house_inds)
     else:
         raise NotImplementedError(
             f"task_specs must be LazyJsonTaskSpecs or Hdf5TaskSpecs not {type(task_specs)}"
@@ -85,12 +83,15 @@ def task_sampler_args_builder(
 
     # create task_spec sampler
     if mode == "train":
-        house_index_to_task_specs = defaultdict(lambda: [])
+        house_index_to_task_specs = defaultdict(lambda: [])  # {house_index: [task_spec, ...], ...}
         for task_spec in selected_task_specs:
             house_index_to_task_specs[task_spec["house_index"]].append(task_spec)
 
         task_spec_sampler = TaskSpecSamplerInfiniteList(
-            house_index_to_task_specs, shuffle=False, repeat_house_until_forced=True
+            house_index_to_task_specs,
+            shuffle=shuffle_task_specs,
+            repeat_house_until_forced=True,
+            house_inds_seed=house_inds_seed,
         )
     else:
         task_spec_sampler = TaskSpecDatasetList(selected_task_specs)
@@ -117,7 +118,7 @@ def task_sampler_args_builder(
         "controller_args": controller_args,
         "controller_type": controller_type,
         "device": device,
-        "visualize": True,
+        "visualize": False,
         "always_allocate_a_new_stretch_controller_when_reset": True,
         "retain_agent_pose": False,
         "prob_randomize_materials": prob_randomize_materials,
@@ -131,7 +132,7 @@ class BaseConfigParams:
     distributed_nodes: int = 1
     test_on_validation: bool = True
     dataset_dir: str = "data/fifteen/ObjectNavType"
-    max_steps: int = 300
+    max_steps: int = 500  # in the paper they used 600 steps
     max_houses: Optional[int] = None
     max_task_specs: Optional[int] = None
     tag: str = "ObjectNavType-RL"
@@ -305,31 +306,42 @@ class BaseConfig(ExperimentConfig, ABC):
         elif mode in ["val", "test"]:
             seed = 0
             
-        # if mode == "train" and self.params.use_grpo:
-        #     num_generations = self.params.grpo_num_generations
-        #     num_workers = len(self.get_devices(mode)) * self.params.distributed_nodes
-        #     if total_processes % num_workers != 0:
-        #         raise ValueError(
-        #             "GRPO requires num_train_processes to be divisible by "
-        #             "the number of workers"
-        #         )
-        #     samplers_per_worker = total_processes // num_workers
-        #     if num_generations != samplers_per_worker:
-        #         raise ValueError(
-        #             "GRPO requires grpo_num_generations to match samplers_per_worker"
-        #         ) # TODO actually maybe we dont need this requirement
-        #     group_total_processes = num_workers
-        #     group_process_ind = process_ind // num_generations
-        #     house_inds_seed = group_process_ind
-
+        group_process_ind = process_ind
+        group_total_processes = total_processes
+        use_grpo = getattr(self.params, "use_grpo", False)
+        house_inds_seed = None
+        
+        if mode == "train" and use_grpo:
+            num_generations = self.params.grpo_num_generations
+            num_workers = len(self.get_devices(mode)) * self.params.distributed_nodes
+            if total_processes % num_workers != 0:
+                raise ValueError(
+                    "GRPO requires num_train_processes to be divisible by "
+                    "the number of workers"
+                )
+            samplers_per_worker = total_processes // num_workers
+            if num_generations != samplers_per_worker:
+                raise ValueError(
+                    "GRPO requires grpo_num_generations to match samplers_per_worker"
+                ) # TODO actually maybe we dont need this requirement
+            group_total_processes = num_workers
+            group_process_ind = process_ind // num_generations
+            house_inds_seed = group_process_ind
+            
+        device = devices[group_process_ind % len(devices)] if devices is not None else None
+        print(f"Process {process_ind} | Seed: {seed} | Group: {group_process_ind} | Device: {device}"
+              f"| All Devices: {devices} | Total Processes: {group_total_processes} | House Inds Seed: {house_inds_seed}")
+        
         return task_sampler_args_builder(
-            process_ind=process_ind,
-            total_processes=total_processes,
+            process_ind=group_process_ind,
+            total_processes=group_total_processes,
             devices=devices,
             deterministic_cudnn=deterministic_cudnn,
             mode=mode,
             task_specs=self.get_task_specs(
-                subset=mode, process_ind=None, total_processes=None
+                subset=mode,
+                process_ind=group_process_ind,
+                total_processes=group_total_processes,
             ),
             houses=self.houses[mode],
             on_server=torch.cuda.is_available(),
@@ -337,8 +349,10 @@ class BaseConfig(ExperimentConfig, ABC):
             action_names=ALL_STRETCH_ACTIONS,
             max_steps=self.params.max_steps,
             max_houses=self.params.max_houses,
-            prob_randomize_materials=0, # 0.8 if mode == "train" else 0,
+            prob_randomize_materials=0.8 if mode == "train" else 0,
             seed=seed,
+            shuffle_task_specs=True,
+            house_inds_seed=house_inds_seed,
         )
 
     def train_task_sampler_args(

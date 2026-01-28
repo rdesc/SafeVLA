@@ -1,4 +1,5 @@
 #!/bin/bash
+
 export PYTHONPATH=/root/SafeVLA/allenact:$PYTHONPATH:/root/SafeVLA  # change to your own path
 export OBJAVERSE_HOUSES_DIR=/root/data/objaverse_houses  # change to your own path
 export OBJAVERSE_DATA_DIR=/root/data/objaverse_assets  # change to your own path
@@ -16,6 +17,16 @@ num_train_processes=32
 output_dir=""
 dataset_dir=""
 cost_limit=2.31
+max_stage_steps=""
+tag=""
+max_houses=""
+grpo_num_generations=4
+max_steps=""
+step_penalty=""
+shaping_weight="0.0"
+seed="42"
+enable_lagrange="False"
+visualize="False"
 
 # Function to print usage
 print_usage() {
@@ -33,6 +44,16 @@ print_usage() {
     echo "  --wandb_entity        WandB entity name"
     echo "  --num_train_processes Number of training processes (default: 32)"
     echo "  --cost_limit          Cost limit (default: 2.31)"
+    echo "  --max_stage_steps     Total training steps across pipeline stages (default: use config)"
+    echo "  --max_steps           Max steps per episode (default: use config)"
+    echo "  --tag                 Experiment tag override (default: derived from task_type)"
+    echo "  --max_houses          Max houses to sample (default: use config)"
+    echo "  --grpo_num_generations Number of GRPO generations (default: use config)"
+    echo "  --step_penalty        Step penalty reward (default: use config)"
+    echo "  --shaping_weight      Shaping reward weight (default: 0.0)"
+    echo "  --seed                Random seed (default: 42)"
+    echo "  --enable_lagrange     Enable Lagrange method: true|false (default: use config)"
+    echo "  --visualize           Enable visualization: true|false (default: False)"
     echo "  --help                Show this help message"
     exit 1
 }
@@ -76,6 +97,70 @@ while [[ $# -gt 0 ]]; do
             cost_limit="$2"
             shift 2
             ;;
+        --max_stage_steps)
+            max_stage_steps="$2"
+            shift 2
+            ;;
+        --tag)
+            tag="$2"
+            shift 2
+            ;;
+        --max_steps)
+            max_steps="$2"
+            shift 2
+            ;;
+        --max_houses)
+            max_houses="$2"
+            shift 2
+            ;;
+        --grpo_num_generations)
+            grpo_num_generations="$2"
+            shift 2
+            ;;
+        --step_penalty)
+            step_penalty="$2"
+            shift 2
+            ;;
+        --shaping_weight)
+            shaping_weight="$2"
+            shift 2
+            ;;
+        --seed)
+            seed="$2"
+            shift 2
+            ;;
+        --enable_lagrange)
+            enable_lagrange="$(echo "$2" | tr '[:upper:]' '[:lower:]')"
+            case "$enable_lagrange" in
+                true)
+                    enable_lagrange="True"
+                    ;;
+                false)
+                    enable_lagrange="False"
+                    ;;
+                *)
+                    echo "Error: --enable_lagrange must be true or false"
+                    exit 1
+                    ;;
+            esac
+            shift 2
+            ;;
+        --visualize)
+            visualize="$(echo "$2" | tr '[:upper:]' '[:lower:]')"
+            case "$visualize" in
+                true)
+                    visualize="True"
+                    ;;
+                false)
+                    visualize="False"
+                    ;;
+                *)
+                    echo "Error: --visualize must be true or false"
+                    exit 1
+                    ;;
+            esac
+            shift 2
+            ;;
         --help)
             print_usage
             ;;
@@ -106,6 +191,39 @@ else
     exit 1
 fi
 
+if [ -z "$tag" ]; then
+    tag="$task_type_internal"
+fi
+
+# Auto-detect latest checkpoint if not provided
+if [ -z "$resume_checkpoint" ]; then
+    base_exp_dir=""
+    for candidate in "$output_dir/$tag" "$output_dir/checkpoints/$tag"; do
+        if [ -d "$candidate" ]; then
+            base_exp_dir="$candidate"
+            break
+        fi
+    done
+
+    if [ -n "$base_exp_dir" ]; then
+        latest_ckpt=""
+        while IFS= read -r -d '' dir; do
+            ckpt_candidate="$(find "$dir" -maxdepth 1 -type f -name "exp*.pt" -printf "%T@ %p\n" 2>/dev/null | sort -nr | head -n 1 | cut -d' ' -f2-)"
+            if [ -n "$ckpt_candidate" ]; then
+                latest_ckpt="$ckpt_candidate"
+                break
+            fi
+        done < <(find "$base_exp_dir" -mindepth 1 -maxdepth 1 -type d -printf "%T@ %p\0" 2>/dev/null | sort -zr | cut -z -d' ' -f2-)
+
+        if [ -n "$latest_ckpt" ]; then
+            resume_checkpoint="$latest_ckpt"
+            echo -e "\nAuto-resuming from latest checkpoint: $resume_checkpoint\n"
+        else
+            echo -e "\nNo checkpoints found under $base_exp_dir\n"
+        fi
+    fi
+fi
+
 # Build the base command
 cmd="python3 training/online/dinov2_vits_tsfm_base.py train \
     --il_ckpt_path $il_ckpt_path \
@@ -113,14 +231,25 @@ cmd="python3 training/online/dinov2_vits_tsfm_base.py train \
     --output_dir $output_dir \
     --dataset_dir $dataset_dir/$task_type_internal \
     --cost_limit $cost_limit \
-    --tag ObjNav_debug_rod_orig_safevla_grpo \
-    --max_houses 12 \
-    --max_steps 500 \
-    --use_grpo True"
+    --tag $tag \
+    --use_grpo True \
+    --grpo_num_generations ${grpo_num_generations} \
+    --seed $seed \
+    --shaping_weight $shaping_weight \
+    --enable_lagrange $enable_lagrange \
+    --visualize $visualize"
 
 # Add checkpoint parameter if provided
 if [ -n "$resume_checkpoint" ]; then
     cmd="$cmd --checkpoint $resume_checkpoint"
+fi
+
+# Get wandb project and entity from environment variables if not provided
+if [ -z "$wandb_project" ] && [ "$WANDB_DISABLED" != "True" ]; then
+    wandb_project="${WANDB_PROJECT:-}"
+fi
+if [ -z "$wandb_entity" ] && [ "$WANDB_DISABLED" != "True" ]; then
+    wandb_entity="${WANDB_ENTITY:-}"
 fi
 
 # Add wandb parameters if provided
@@ -131,8 +260,29 @@ if [ -n "$wandb_project" ] && [ -n "$wandb_entity" ]; then
     --callbacks \"wandb_logging_callback\""
 fi
 
+# Add max_stage_steps if provided
+if [ -n "$max_stage_steps" ]; then
+    cmd="$cmd --max_stage_steps $max_stage_steps"
+fi
+
+# Add max_steps if provided
+if [ -n "$max_steps" ]; then
+    cmd="$cmd --max_steps $max_steps"
+fi
+
+# Add step_penalty if provided
+if [ -n "$step_penalty" ]; then
+    cmd="$cmd --step_penalty $step_penalty"
+fi
+
+# Add max_houses if provided
+if [ -n "$max_houses" ]; then
+    cmd="$cmd --max_houses $max_houses"
+fi
+
 # Execute the command
 echo "Executing command:"
 echo "$cmd"
 echo ""
 eval $cmd
+
