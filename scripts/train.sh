@@ -1,14 +1,5 @@
 #!/bin/bash
-
-# export PYTHONPATH=$PYTHONPATH:/root/SafeVLA/old_repo/SafeVLA# change to your own path
-# export OBJAVERSE_HOUSES_DIR=/path/to/objaverse_houses  # change to your own path
-# export OBJAVERSE_DATA_DIR=/path/to/objaverse_assets  # change to your own path
-# export HF_ENDPOINT=https://hf-mirror.com
-# export ALLENACT_DEBUG=True
-# export ALLENACT_DEBUG_VST_TIMEOUT=2000
-
-
-export PYTHONPATH=/root/SafeVLA/old_repo/SafeVLA/allenact:$PYTHONPATH:/root/SafeVLA/old_repo/SafeVLA  # change to your own path
+export PYTHONPATH=/root/SafeVLA/allenact:$PYTHONPATH:/root/SafeVLA  # change to your own path
 export OBJAVERSE_HOUSES_DIR=/root/data/objaverse_houses  # change to your own path
 export OBJAVERSE_DATA_DIR=/root/data/objaverse_assets  # change to your own path
 export HF_HOME=/root/huggingface
