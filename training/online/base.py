@@ -68,7 +68,8 @@ def task_sampler_args_builder(
         # assert (
         #     task_specs.total_procs == total_processes
         # ), f"Hdf5TaskSpecs.total_procs ({task_specs.total_procs}) must match total_processes ({total_processes})"
-        selected_task_specs = [task_specs[0]]
+        # selected_task_specs = [task_specs[0]]
+        selected_task_specs = task_specs[:25]
         selected_house_inds = [
             task_spec["house_index"] for task_spec in selected_task_specs
         ]
@@ -89,7 +90,7 @@ def task_sampler_args_builder(
             house_index_to_task_specs[task_spec["house_index"]].append(task_spec)
 
         task_spec_sampler = TaskSpecSamplerInfiniteList(
-            house_index_to_task_specs, shuffle=True, repeat_house_until_forced=True
+            house_index_to_task_specs, shuffle=False, repeat_house_until_forced=True
         )
     else:
         task_spec_sampler = TaskSpecDatasetList(selected_task_specs)
@@ -303,6 +304,23 @@ class BaseConfig(ExperimentConfig, ABC):
             seed = seeds[process_ind % len(seeds)]
         elif mode in ["val", "test"]:
             seed = 0
+            
+        # if mode == "train" and self.params.use_grpo:
+        #     num_generations = self.params.grpo_num_generations
+        #     num_workers = len(self.get_devices(mode)) * self.params.distributed_nodes
+        #     if total_processes % num_workers != 0:
+        #         raise ValueError(
+        #             "GRPO requires num_train_processes to be divisible by "
+        #             "the number of workers"
+        #         )
+        #     samplers_per_worker = total_processes // num_workers
+        #     if num_generations != samplers_per_worker:
+        #         raise ValueError(
+        #             "GRPO requires grpo_num_generations to match samplers_per_worker"
+        #         ) # TODO actually maybe we dont need this requirement
+        #     group_total_processes = num_workers
+        #     group_process_ind = process_ind // num_generations
+        #     house_inds_seed = group_process_ind
 
         return task_sampler_args_builder(
             process_ind=process_ind,
