@@ -12,9 +12,9 @@
 
 set -euo pipefail
 
-EXP_NAME=constrained_grpo_objnav_num_gens_4_test_01
-OUTPUT_DIR=/network/scratch/d/deschaer/SafeVLA/data/models/
-CODE_PATH=/network/scratch/d/deschaer/SafeVLA/
+EXP_NAME=unconstrained_grpo_objnav_num_gens_4_reward_shaping
+OUTPUT_DIR=/network/scratch/l/luke.rowe/SafeVLA/data/models/
+CODE_PATH=/home/mila/l/luke.rowe/SafeVLA/
 DATA_PATH=/network/scratch/d/deschaer/SafeVLA/data
 WANDB_PROJECT=safety_chores
 WANDB_ENTITY=rdesc1-milaquebec
@@ -41,7 +41,8 @@ singularity exec --nv --cleanenv \
   --env OBJAVERSE_DATA_DIR=/root/data/objaverse_assets \
   --env PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   --env TORCH_CUDNN_V8_API_ENABLED=1 \
-  ${CODE_PATH}/safevla.sif \
+  --env PYTHONNOUSERSITE=1 \
+  /network/scratch/d/deschaer/SafeVLA/safevla.sif \
   /bin/bash -lc "cd /root/SafeVLA && CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train.sh \
     --task_type objectnav \
     --il_ckpt_path /root/data/models/spoc_IL/model.ckpt \

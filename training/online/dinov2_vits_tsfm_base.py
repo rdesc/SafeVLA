@@ -59,7 +59,7 @@ from training.online.loss.customized_loss import GRPOLogGrad, PPOLogGrad, SafePP
 
 @dataclass
 class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
-    use_data_augmentation: bool = True
+    use_data_augmentation: bool = False
     use_text_goal: bool = True
     use_bbox: bool = False
     traj_max_index: int = 2048
@@ -70,14 +70,15 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     wandb_entity: str = ""
     collision_penalty: float = -0.00
     lr: float = 2e-5
-    shaping_weight: float = 0.0
+    shaping_weight: float = 0.0  # used in e.g. ObjectNavRewardShaper
+    step_penalty: float = 0.0  # e.g. -0.01
 
     # preprocess params
     rgb_height: int = 224
     rgb_width: int = 384
 
     # training pipeline params
-    save_interval: int = 10_000
+    save_interval: int = 30_000
     log_metric_accumulate_interval: int = 1_000
 
     # overwrite the BaseConfigParams tag
@@ -101,6 +102,10 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     gamma: float = 0.99
     gae_lambda: float = 0.95
 
+    enable_lagrange: bool = True
+    lagrangian_multiplier_init: float = 0.001
+    lambda_lr: float = 0.035
+    lambda_optimizer: str = "Adam"
 
 class DinoV2ViTSTSFMBase(BaseConfig):
 
@@ -113,10 +118,10 @@ class DinoV2ViTSTSFMBase(BaseConfig):
 
     def make_sampler_fn(self, **kwargs):
         kwargs["task_args"]["reward_config"] = RewardConfig(
-            step_penalty=0.00,
+            step_penalty=self.params.step_penalty,  # -0.01
             goal_success_reward=10.0,
             failed_stop_reward=0.0,
-            shaping_weight=self.params.shaping_weight,
+            shaping_weight=self.params.shaping_weight,  # 1.0
             reached_horizon_reward=0.0,
             positive_only_reward=False,
             failed_action_penalty=self.params.collision_penalty,

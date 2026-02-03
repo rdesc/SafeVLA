@@ -322,7 +322,7 @@ class GRPOLogGrad(AbstractActorCriticLoss):
         if returns.dim() != 2:
             returns = returns.view(returns.shape[0], returns.shape[1], -1).mean(-1)
 
-        episode_returns = torch.tensor([returns[t-1][idx] for idx, t in enumerate(final_time_steps)]).to(returns.device)
+        episode_returns = torch.tensor([returns[t][idx] for idx, t in enumerate(final_time_steps)]).to(returns.device)
         mean_return = episode_returns.mean()
         std_return = episode_returns.std(unbiased=False)
         mean_cost = costs.mean()
@@ -331,7 +331,8 @@ class GRPOLogGrad(AbstractActorCriticLoss):
         adv_reward = (episode_returns - mean_return) / (std_return + self.group_advantage_eps)
         adv_cost = (mean_cost - costs) / (std_cost + self.group_advantage_eps)
         
-        print("episode returns:", episode_returns, "costs", costs, "adv_reward", adv_reward, "adv_cost", adv_cost, "multiplier", multiplier)
+        print("episode returns:", episode_returns, "costs:", costs, "adv_reward:", adv_reward, "adv_cost:", adv_cost,
+              "multiplier:", multiplier, "combined adv:", adv_reward * (1 - multiplier) + adv_cost * multiplier)
 
         return (
                 adv_reward * (1 - multiplier) + adv_cost * multiplier,
@@ -382,7 +383,10 @@ class GRPOLogGrad(AbstractActorCriticLoss):
         action_log_probs = actor_critic_output.distributions.log_prob(actions)
 
         masks = cast(torch.FloatTensor, batch["masks"])
-        final_time_steps = batch["observations"]["time_step"][-1]
+        num_steps = masks.shape[0]
+        final_time_steps = batch["observations"]["time_step"][-1].clone()
+        for idx, item in enumerate(final_time_steps):
+            final_time_steps[idx] = item - 1 if item != num_steps - 1 else item  # small fix
         returns = cast(torch.FloatTensor, batch["returns"])
         costs = cast(torch.FloatTensor, kwargs["ep_costs"])
         multiplier = torch.tensor(kwargs["lagrangian_multiplier"].item())
@@ -429,6 +433,8 @@ class GRPOLogGrad(AbstractActorCriticLoss):
                 "action": float(action_loss_mean.item()),
                 "rollout_num_steps": actions.shape[0],
                 "rollout_avg_num_steps": float(final_time_steps.sum().item() / len(final_time_steps)),
+                "multiplier": float(multiplier.item()),
+                "multiplier_raw": float(kwargs["multiplier_raw"].item()),
                 **episode_adv_stats
             },
         )

@@ -190,7 +190,8 @@ cmd="python3 training/online/dinov2_vits_tsfm_base.py train \
     --use_grpo True \
     --grpo_num_generations ${grpo_num_generations} \
     --seed 42 \
-    --shaping_weight 0.1"
+    --shaping_weight 1.0 \
+    --step_penalty -0.01"
     # --enable_lagrange True"
     # --shaping_weight 0.1 \
 
