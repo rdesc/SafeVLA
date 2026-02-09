@@ -246,7 +246,7 @@ class AbstractSPOCTask(Task["StretchController"]):
 
         return step_result
 
-    def _step(self, action: int) -> RLStepResult:
+    def _step(self, action: int) -> SafeRLStepResult:
         action_str = self.action_names[action]
         self.last_taken_action_str = action_str
         collided = False
@@ -355,8 +355,6 @@ class AbstractSPOCTask(Task["StretchController"]):
             "sum_blind": self.cumulative_blind,
             "sum_fragile": self.cumulative_fragile,
             "sum_critical": self.cumulative_critical,
-            "sum_robot": self.cumulative_robot,
-            "sum_object": self.cumulative_object,
             "camera_seen": self.curr_seen_objects,
             "last_objects_causing_cost_list": self.last_objects_causing_cost_list,
             "ignore_objects_name": self.ignore_objects_name,
@@ -370,12 +368,18 @@ class AbstractSPOCTask(Task["StretchController"]):
             observation=self.get_observations(),
             reward=self.judge(),
             cost=cost,
+            danger=danger,
+            corner=corner,
+            blind=blind,
+            fragile=fragile,
+            critical=critical,
             done=self.is_done(),
             info={
                 "last_action_success": self.last_action_success,
                 "action": action,
                 "collided": collided,
                 "errorMessage": error_message,
+                "num_steps_taken": self.num_steps_taken(),
             },
         )
         return step_result

@@ -300,7 +300,7 @@ class PPOLogGrad(PPO):
 
 
 class SafePPOLogGrad(PPO):
-    def __init__(self, discrete_critics: bool, action_loss_schedule, *args, **kwargs):
+    def __init__(self, discrete_critics: bool, action_loss_schedule, mask_out_other_rollouts, *args, **kwargs):
         """
         Args:
             discrete_critics: whether the critic is discrete
@@ -314,6 +314,7 @@ class SafePPOLogGrad(PPO):
             else (lambda x: 1.0)
         )
         self.c_adv_key = "c_" + self.adv_key
+        self._mask_out_other_rollouts = mask_out_other_rollouts
 
     def loss_per_step(
         self,
@@ -326,7 +327,6 @@ class SafePPOLogGrad(PPO):
     ]:  # TODO tuple output
 
         actions = cast(torch.LongTensor, batch["actions"])
-        masks = cast(torch.FloatTensor, batch["masks"])
 
         action_log_probs = actor_critic_output.distributions.log_prob(actions)
         dist_entropy: torch.FloatTensor = getattr(
@@ -362,11 +362,10 @@ class SafePPOLogGrad(PPO):
 
         use_clamped = surr2 < surr1
         action_loss = -torch.where(cast(torch.Tensor, use_clamped), surr2, surr1)
-                
-        masks = cast(torch.FloatTensor, batch["masks"])
-        # masks = masks.clone() # defensive copy
-        # masks[0] = 1.0 # safe: mask has no grad
-        action_loss = (action_loss * masks).sum() / masks.sum().clamp(min=1)
+        
+        if self._mask_out_other_rollouts:
+            masks = cast(torch.FloatTensor, batch["masks"])
+            action_loss = (action_loss * masks).sum() / masks.sum().clamp(min=1)
 
         if self.discrete_critics:
             logits = actor_critic_output.extras["full_logits"]
@@ -386,11 +385,17 @@ class SafePPOLogGrad(PPO):
                 value_losses_clipped = (value_pred_clipped - batch["returns"]).pow(2)
                 value_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
             else:
-                value_loss = (
+                if self._mask_out_other_rollouts:
+                    value_loss = (
                     0.5
                     * ((cast(torch.FloatTensor, batch["returns"]) - values).pow(2) * masks).sum() / masks.sum().clamp(min=1)
                 )
-                
+                else:
+                    value_loss = (
+                        0.5
+                        * (cast(torch.FloatTensor, batch["returns"]) - values).pow(2).mean()
+                    )
+
         bias_norm = actor_critic_output.extras["bias_norm"]
         weight_norm = actor_critic_output.extras["weight_norm"]
         try:
@@ -399,13 +404,13 @@ class SafePPOLogGrad(PPO):
             weight_grad = torch.tensor([0.0])
 
         action_weight = self.action_loss_schedule(step_count)
-
+        
         # noinspection PyUnresolvedReferences
         return (
             {
                 "value": (value_loss, self.value_loss_coef),
                 "action": (action_loss, action_weight),
-                "entropy": (dist_entropy.mul_(-1.0), 0),  # type: ignore
+                "entropy": (dist_entropy.mul_(-1.0), self.entropy_coef),  # type: ignore
             },
             {
                 "bias_norm": bias_norm,
@@ -420,14 +425,69 @@ class SafePPOLogGrad(PPO):
             },
         )
 
+    def loss(  # type: ignore
+        self,
+        step_count: int,
+        batch: ObservationType,
+        actor_critic_output: ActorCriticOutput[CategoricalDistr],
+        *args,
+        **kwargs,
+    ):
+        losses_per_step, ratio_info = self.loss_per_step(
+            step_count=step_count,
+            batch=batch,
+            actor_critic_output=actor_critic_output,
+            lagrangian_multiplier=kwargs.get("lagrangian_multiplier", torch.tensor(0.0)),
+        )
+        losses = {
+            key: (loss.mean(), weight)
+            for (key, (loss, weight)) in losses_per_step.items()
+        }
+
+        total_loss = sum(
+            loss * weight if weight is not None else loss
+            for loss, weight in losses.values()
+        )
+
+        result = (
+            total_loss,
+            {
+                "ppo_total": cast(torch.Tensor, total_loss).item(),
+                **{key: loss.item() for key, (loss, _) in losses.items()},
+            }
+            | ratio_info,
+        )
+
+        return result
+
+class SafeGRPOLogGrad(PPO):
+    def __init__(self, *args, **kwargs):
+        """
+        Args:
+            action_loss_schedule: a function that takes the step count and returns the weight for the action loss
+        """
+        super().__init__(*args, **kwargs)
 
     def _episode_advantages(self,
                             returns: torch.Tensor,
-                            final_time_steps: torch.Tensor):
-        
+                            final_time_steps: torch.Tensor,
+                            reward_weight: list,
+                            constraint_weights: list,
+                            costs: list,
+                            advantage_method: str):
         episode_returns = returns[final_time_steps, torch.arange(returns.shape[1])]
+        
+        # TODO: this is the last part right??!
+        
+        # need t get the costs here 
+        # if advantage_method == 'scalarize_rewards':
+        #     scaled_returns = reward_weight * episode_returns
+        #     for idx, c_weight in enumerate(constraint_weights):
+        #         scaled_returns += c_weight * 
+        #     episode_returns = scaled_returns
+        
         mean_return = episode_returns.mean()
-        std_return = episode_returns.std(unbiased=False)
+        std_return = episode_returns.std()
         
         adv_reward = (episode_returns - mean_return) / (std_return + 1e-5)
         
@@ -454,14 +514,28 @@ class SafePPOLogGrad(PPO):
     ):
 
         actions = cast(torch.LongTensor, batch["actions"])
+        reward_weight = kwargs.get("reward_weight")  # float
+        constraint_weights = kwargs.get("constraint_weights")  # list of floats
+        advantage_method = kwargs.get("advantage_method")
+        costs = kwargs.get("costs")  # list of tensors
+        
         print("tensor shape in computing loss:", actions.shape)
+        print("reward and constraint weights", reward_weight, constraint_weights)
+        
         action_log_probs = actor_critic_output.distributions.log_prob(actions)
         returns = cast(torch.FloatTensor, batch["returns"])
         
         masks = cast(torch.FloatTensor, batch["masks"])
-        final_time_steps = masks.sum(dim=0).long().squeeze()
+        masks[0] = 1.0  # ensure first step is valid 
+        final_time_steps = masks.sum(dim=0).long().squeeze() - 1
 
-        episode_adv, _ = self._episode_advantages(returns, final_time_steps)
+        episode_adv, episode_adv_stats = self._episode_advantages(returns,
+                                                                  final_time_steps,
+                                                                  reward_weight,
+                                                                  constraint_weights,
+                                                                  costs,
+                                                                  advantage_method,
+                                                                  )
         group_adv = episode_adv.view(1, -1)
         
         def add_trailing_dims(t: torch.Tensor):
@@ -488,22 +562,6 @@ class SafePPOLogGrad(PPO):
 
         total_loss = action_loss.sum() / valid_mask.sum()
 
-        # losses_per_step, ratio_info = self.loss_per_step(
-        #     step_count=step_count,
-        #     batch=batch,
-        #     actor_critic_output=actor_critic_output,
-        #     lagrangian_multiplier=kwargs["lagrangian_multiplier"],
-        # )
-        # losses = {
-        #     key: (loss.mean(), weight)
-        #     for (key, (loss, weight)) in losses_per_step.items()
-        # }
-        
-        # total_loss = sum(
-        #     loss * weight if weight is not None else loss
-        #     for loss, weight in losses.values()
-        # )
-
         result = (
             total_loss,
             {
@@ -512,8 +570,9 @@ class SafePPOLogGrad(PPO):
                 "ratio_mean": float(ratio.mean().item()),
                 "clamped_ratio_mean": float(clamped_ratio.mean().item()),
                 "rollout_num_steps": actions.shape[0],
-                # "rollout_avg_num_steps": float(final_time_steps.sum().item() / len(final_time_steps)),
+                "rollout_avg_num_steps": float(final_time_steps.sum().item() / len(final_time_steps)),
                 "mean_reward_per_step": float((returns * masks).sum().item() / masks.sum().item()),
+                **episode_adv_stats
             },
         )
 

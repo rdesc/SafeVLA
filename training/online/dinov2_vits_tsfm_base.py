@@ -54,7 +54,7 @@ from environment.vision_sensors import (
 )
 from environment.manipulation_sensors import AnObjectIsInHand
 
-from training.online.loss.customized_loss import PPOLogGrad, SafePPOLogGrad
+from training.online.loss.customized_loss import PPOLogGrad, SafePPOLogGrad, SafeGRPOLogGrad
 
 
 @dataclass
@@ -64,7 +64,6 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     use_bbox: bool = False
     traj_max_index: int = 2048
     use_traj_indexing: bool = True
-    advance_scene_rollout_period: Optional[int] = None
     steps_in_house_before_force_scene_advance: int = 2000
     wandb_project: str = ""
     wandb_entity: str = ""
@@ -76,8 +75,10 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     rgb_width: int = 384
 
     # training pipeline params
-    save_interval: int = 50_000
+    save_interval: int = 20_000
     metric_accumulate_interval: int = 100
+    num_steps_per_rollout: int = 128
+    mask_out_other_rollouts: bool = False  # for debugging !
 
     # overwrite the BaseConfigParams tag
     tag: str = "SafeVLA-ObjectNavType-RL-DinoV2-ViTS-TSFM"
@@ -93,14 +94,17 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     grpo_group_advantage_eps: float = 1e-5
     grpo_per_step_advantage: bool = False
     max_stage_steps: int = int(1e9)
+    train_steps_value_network: int = 20000
     
     num_mini_batch: int = 1
     update_repeats: int = 4  # number of iterations per update
     max_grad_norm: float = 0.5
-    gamma: float = 1.0
+    gamma: float = 0.99
     gae_lambda: float = 0.95
 
-    enable_lagrange: bool = False
+    use_constraints: bool = False
+    advantage_method: str = "scalarize_advantages"
+    constraints_thresholds: Optional[Sequence[float]] = None
     lagrangian_multiplier_init: float = 0.001
     lambda_lr: float = 0.035
     lambda_optimizer: str = "Adam"
@@ -311,93 +315,93 @@ class DinoV2ViTSTSFMBase(BaseConfig):
         return model
 
     def training_pipeline(self, **kwargs):
-        log_interval_small = (
-            self.params.num_train_processes * 128 * 5
-            if torch.cuda.is_available()
-            else 1
-        )
-        log_interval_medium = (
-            self.params.num_train_processes * 128 * 5
-            if torch.cuda.is_available()
-            else 1
-        )
-        log_interval_large = (
-            self.params.num_train_processes * 128 * 5
-            if torch.cuda.is_available()
-            else 1
-        )
-
-        batch_steps_0 = int(20000)
-        batch_steps_1 = int(800000)
-        batch_steps_2 = int(1e9) - batch_steps_1 - batch_steps_0
-
-        NewPPOConfig = dict(
-            clip_param=0.1,
-            value_loss_coef=0.5,
-            entropy_coef=0.0,
-            use_clipped_value_loss=False,
-            action_loss_schedule=None,
-            discrete_critics=False,
-            normalize_advantage=False,
-        )
-
-        assert (
-            self.params.advance_scene_rollout_period is None
-        ), "use STEPS_IN_HOUSE_BEFORE_FORCE_SCENE_ADVANCE instead"
-
-        return TrainingPipeline(
-            save_interval=self.params.save_interval,
-            metric_accumulate_interval=self.params.metric_accumulate_interval,
-            optimizer_builder=Builder(optim.Adam, dict(lr=self.params.lr)),
-            num_mini_batch=1,
-            update_repeats=4,
-            max_grad_norm=0.5,
-            named_losses={
-                "ppo_log_loss": SafePPOLogGrad(**NewPPOConfig),
-                "ppo_value_loss": PPOValue(
-                    clip_param=0.1, use_clipped_value_loss=False
-                ),
-                "safe_ppo_value_loss": SafePPOValue(
-                    clip_param=0.1, use_clipped_value_loss=False
-                ),
-            },
-            # "safe_ppo_value_loss": SafePPOValue(clip_param=0.1, use_clipped_value_loss=False)},
-            gamma=0.99,
-            use_gae=True,
-            gae_lambda=0.95,
-            pipeline_stages=[
-                # PipelineStage(
-                #     loss_names=["ppo_value_loss", "safe_ppo_value_loss"],
-                #     max_stage_steps=batch_steps_0,
-                #     training_settings=TrainingSettings(
-                #         num_steps=500,
-                #         metric_accumulate_interval=10,
-                #         advance_scene_rollout_period=self.params.steps_in_house_before_force_scene_advance
-                #         // 128,
-                #     ),
-                # ),
-                PipelineStage(
-                    loss_names=["ppo_log_loss"],
-                    max_stage_steps=batch_steps_1,
-                    training_settings=TrainingSettings(
-                        num_steps=300,
-                        metric_accumulate_interval=10,
-                        advance_scene_rollout_period=self.params.steps_in_house_before_force_scene_advance
-                        // 128,
+        if self.params.use_grpo:
+            NewGRPOConfig = dict(
+                clip_param=self.params.grpo_clip_param,
+                group_advantage_eps=self.params.grpo_group_advantage_eps,
+                per_step_advantage=self.params.grpo_per_step_advantage,
+            )
+            
+            return TrainingPipeline(
+                save_interval=self.params.save_interval,
+                metric_accumulate_interval=self.params.metric_accumulate_interval,
+                optimizer_builder=Builder(optim.Adam, dict(lr=self.params.lr)),
+                num_mini_batch=1,
+                update_repeats=self.params.update_repeats,
+                max_grad_norm=0.5,
+                named_losses={
+                    "ppo_log_loss": SafeGRPOLogGrad(**NewGRPOConfig),
+                },
+                # "safe_ppo_value_loss": SafePPOValue(clip_param=0.1, use_clipped_value_loss=False)},
+                gamma=self.params.gamma,
+                use_gae=False,
+                gae_lambda=self.params.gae_lambda,
+                pipeline_stages=[
+                    PipelineStage(
+                        loss_names=["ppo_value_loss", "safe_ppo_value_loss"],
+                        max_stage_steps=self.params.max_stage_steps,
+                        training_settings=TrainingSettings(
+                            num_steps=self.params.num_steps_per_rollout,
+                            metric_accumulate_interval=self.params.metric_accumulate_interval,
+                            advance_scene_rollout_period=1
+                        ),
                     ),
-                ),
-                PipelineStage(
-                    loss_names=["ppo_log_loss"],
-                    max_stage_steps=batch_steps_2,
-                    training_settings=TrainingSettings(
-                        num_steps=500,
-                        metric_accumulate_interval=10,
-                        advance_scene_rollout_period=self.params.steps_in_house_before_force_scene_advance
-                        // 128,
+                ],
+            )
+        
+        else:
+            NewPPOConfig = dict(
+                clip_param=0.1,
+                value_loss_coef=0.5,
+                entropy_coef=0.0,
+                use_clipped_value_loss=False,
+                action_loss_schedule=None,
+                discrete_critics=False,
+                normalize_advantage=False,
+                mask_out_other_rollouts=self.params.mask_out_other_rollouts,
+            )
+            
+            return TrainingPipeline(
+                save_interval=self.params.save_interval,
+                metric_accumulate_interval=self.params.metric_accumulate_interval,
+                optimizer_builder=Builder(optim.Adam, dict(lr=self.params.lr)),
+                num_mini_batch=1,
+                update_repeats=self.params.update_repeats,
+                max_grad_norm=0.5,
+                named_losses={
+                    "ppo_log_loss": SafePPOLogGrad(**NewPPOConfig),
+                    "ppo_value_loss": PPOValue(
+                        clip_param=0.1, use_clipped_value_loss=False, mask_out_other_rollouts=self.params.mask_out_other_rollouts,
                     ),
-                ),
-            ],
-        )
+                    "safe_ppo_value_loss": SafePPOValue(
+                        clip_param=0.1, use_clipped_value_loss=False, mask_out_other_rollouts=self.params.mask_out_other_rollouts,
+                    ),
+                },
+                # "safe_ppo_value_loss": SafePPOValue(clip_param=0.1, use_clipped_value_loss=False)},
+                gamma=self.params.gamma,
+                use_gae=True,
+                gae_lambda=self.params.gae_lambda,
+                pipeline_stages=[
+                    PipelineStage(
+                        loss_names=["ppo_value_loss", "safe_ppo_value_loss"],
+                        max_stage_steps=self.params.train_steps_value_network,
+                        training_settings=TrainingSettings(
+                            num_steps=self.params.num_steps_per_rollout,
+                            metric_accumulate_interval=self.params.metric_accumulate_interval,
+                            advance_scene_rollout_period=self.params.steps_in_house_before_force_scene_advance // 128,
+                        ),
+                    ),
+                    PipelineStage(
+                        loss_names=["ppo_log_loss"],
+                        max_stage_steps=self.params.max_stage_steps,
+                        training_settings=TrainingSettings(
+                            num_steps=self.params.num_steps_per_rollout,
+                            metric_accumulate_interval=self.params.metric_accumulate_interval,
+                            advance_scene_rollout_period=self.params.steps_in_house_before_force_scene_advance // 128,
+                        ),
+                    ),
+                ],
+            )
 
     def wandb_logging_callback(self) -> SimpleWandbLogging:
         assert (

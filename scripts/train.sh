@@ -21,12 +21,18 @@ max_stage_steps=""
 tag=""
 max_houses=""
 grpo_num_generations=4
-max_steps=""
+max_steps="300"
 step_penalty=""
 shaping_weight="0.0"
 seed="42"
-enable_lagrange="False"
+use_constraints="False"
+advantage_method="scalarize_advantages"
+constraints_thresholds=""
 visualize="False"
+update_repeats=""
+num_steps_per_rollout=$max_steps
+gamma=""
+use_grpo="True"
 
 # Function to print usage
 print_usage() {
@@ -52,8 +58,14 @@ print_usage() {
     echo "  --step_penalty        Step penalty reward (default: use config)"
     echo "  --shaping_weight      Shaping reward weight (default: 0.0)"
     echo "  --seed                Random seed (default: 42)"
-    echo "  --enable_lagrange     Enable Lagrange method: true|false (default: use config)"
+    echo "  --use_constraints     Enable constraints method: true|false (default: use config)"
+    echo "  --advantage_method    Advantage method: scalarize_advantages | separate_advantages (default: scalarize_advantages)"
+    echo "  --constraints_thresholds Comma-separated floats (e.g. 0.1,0.1,0.1,0.1,0.1) or Python list string"
     echo "  --visualize           Enable visualization: true|false (default: False)"
+    echo "  --update_repeats      PPO update repeats per rollout (default: use config)"
+    echo "  --num_steps_per_rollout Steps per rollout (default: use config)"
+    echo "  --gamma               Discount factor (default: use config)"
+    echo "  --use_grpo            Enable GRPO: true|false (default: use config)"
     echo "  --help                Show this help message"
     exit 1
 }
@@ -117,6 +129,34 @@ while [[ $# -gt 0 ]]; do
             grpo_num_generations="$2"
             shift 2
             ;;
+        --update_repeats)
+            update_repeats="$2"
+            shift 2
+            ;;
+        --num_steps_per_rollout)
+            num_steps_per_rollout="$2"
+            shift 2
+            ;;
+        --gamma)
+            gamma="$2"
+            shift 2
+            ;;
+        --use_grpo)
+            use_grpo="$(echo "$2" | tr '[:upper:]' '[:lower:]')"
+            case "$use_grpo" in
+                true)
+                    use_grpo="True"
+                    ;;
+                false)
+                    use_grpo="False"
+                    ;;
+                *)
+                    echo "Error: --use_grpo must be true or false"
+                    exit 1
+                    ;;
+            esac
+            shift 2
+            ;;
         --step_penalty)
             step_penalty="$2"
             shift 2
@@ -129,20 +169,28 @@ while [[ $# -gt 0 ]]; do
             seed="$2"
             shift 2
             ;;
-        --enable_lagrange)
-            enable_lagrange="$(echo "$2" | tr '[:upper:]' '[:lower:]')"
-            case "$enable_lagrange" in
+        --use_constraints)
+            use_constraints="$(echo "$2" | tr '[:upper:]' '[:lower:]')"
+            case "$use_constraints" in
                 true)
-                    enable_lagrange="True"
+                    use_constraints="True"
                     ;;
                 false)
-                    enable_lagrange="False"
+                    use_constraints="False"
                     ;;
                 *)
                     echo "Error: --enable_lagrange must be true or false"
                     exit 1
                     ;;
             esac
+            shift 2
+            ;;
+        --advantage_method)
+            advantage_method="$2"
+            shift 2
+            ;;
+        --constraints_thresholds)
+            constraints_thresholds="$2"
             shift 2
             ;;
         --visualize)
@@ -232,12 +280,13 @@ cmd="python3 training/online/dinov2_vits_tsfm_base.py train \
     --dataset_dir $dataset_dir/$task_type_internal \
     --cost_limit $cost_limit \
     --tag $tag \
-    --use_grpo True \
     --grpo_num_generations ${grpo_num_generations} \
     --seed $seed \
     --shaping_weight $shaping_weight \
-    --enable_lagrange $enable_lagrange \
-    --visualize $visualize"
+    --use_constraints $use_constraints \
+    --advantage_method $advantage_method \
+    --visualize $visualize \
+    "
 
 # Add checkpoint parameter if provided
 if [ -n "$resume_checkpoint" ]; then
@@ -270,6 +319,34 @@ if [ -n "$max_steps" ]; then
     cmd="$cmd --max_steps $max_steps"
 fi
 
+# Add update_repeats if provided
+if [ -n "$update_repeats" ]; then
+    cmd="$cmd --update_repeats $update_repeats"
+fi
+
+# Add num_steps_per_rollout if provided
+if [ -n "$num_steps_per_rollout" ]; then
+    cmd="$cmd --num_steps_per_rollout $num_steps_per_rollout"
+fi
+
+# Add gamma if provided
+if [ -n "$gamma" ]; then
+    cmd="$cmd --gamma $gamma"
+fi
+
+# Add use_grpo if provided
+if [ -n "$use_grpo" ]; then
+    cmd="$cmd --use_grpo $use_grpo"
+fi
+
+# Add constraints_thresholds if provided
+if [ -n "$constraints_thresholds" ]; then
+    if [[ "$constraints_thresholds" != \[*\] ]]; then
+        constraints_thresholds="[$constraints_thresholds]"
+    fi
+    cmd="$cmd --constraints_thresholds \"$constraints_thresholds\""
+fi
+
 # Add step_penalty if provided
 if [ -n "$step_penalty" ]; then
     cmd="$cmd --step_penalty $step_penalty"
@@ -285,4 +362,3 @@ echo "Executing command:"
 echo "$cmd"
 echo ""
 eval $cmd
-

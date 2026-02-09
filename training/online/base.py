@@ -45,6 +45,7 @@ def task_sampler_args_builder(
     seed: Optional[int] = None,
     shuffle_task_specs: Optional[bool] = None,
     house_inds_seed: Optional[int] = None,
+    auto_resample_when_done: bool = True,
 ):
     assert on_server or max_houses is not None, (
         "max_houses must be provided if not on server. "
@@ -123,6 +124,7 @@ def task_sampler_args_builder(
         "retain_agent_pose": False,
         "prob_randomize_materials": prob_randomize_materials,
         "seed": seed,
+        "auto_resample_when_done": auto_resample_when_done
     }
 
 
@@ -132,9 +134,12 @@ class BaseConfigParams:
     distributed_nodes: int = 1
     test_on_validation: bool = True
     dataset_dir: str = "data/fifteen/ObjectNavType"
-    max_steps: int = 500  # in the paper they used 600 steps
+    # in the paper they used 600 steps
+    # the sampler will return is_done() -> True after max_steps
+    max_steps: int = 500
     max_houses: Optional[int] = None
     max_task_specs: Optional[int] = None
+    auto_resample_when_done: bool = True
     tag: str = "ObjectNavType-RL"
 
 
@@ -349,10 +354,11 @@ class BaseConfig(ExperimentConfig, ABC):
             action_names=ALL_STRETCH_ACTIONS,
             max_steps=self.params.max_steps,
             max_houses=self.params.max_houses,
-            prob_randomize_materials=0.8 if mode == "train" else 0,
+            prob_randomize_materials=0, # 0.8 if mode == "train" else 0,
             seed=seed,
             shuffle_task_specs=True,
             house_inds_seed=house_inds_seed,
+            auto_resample_when_done=self.params.auto_resample_when_done
         )
 
     def train_task_sampler_args(

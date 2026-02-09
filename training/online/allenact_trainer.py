@@ -69,6 +69,9 @@ class OnPolicyRunnerMixin(abc.ABC):
             try_restart_after_task_error=enable_crash_recovery,
             save_ckpt_at_every_host=save_ckpt_at_every_host,
             cost_limit=self.cost_limit,
+            advantage_method=getattr(self, "advantage_method", "scalarize_advantages"),
+            use_constraints=getattr(self, "use_constraints", None),
+            constraints_thresholds=getattr(self, "constraints_thresholds", None),
         )
 
     def test(

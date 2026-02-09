@@ -261,6 +261,11 @@ class InferenceAgentVIDA(InferenceAgent):
                 rewards=dummy_val,
                 costs=dummy_val,
                 c_value_preds=dummy_val,
+                danger=dummy_val,
+                corner=dummy_val,
+                blind=dummy_val,
+                fragile=dummy_val,
+                critical=dummy_val,
                 masks=torch.ones(
                     (1, 1), device=self.device
                 ),  # Always == 1 as we're in a single task until `reset`

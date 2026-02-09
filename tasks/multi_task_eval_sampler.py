@@ -245,3 +245,13 @@ class MultiTaskSampler(AbstractSPOCTaskSampler):
 
     def reset(self):
         self.task_spec_sampler.reset()
+
+    def state_dict(self) -> Dict[str, Any]:
+        return {
+            "task_spec_sampler_state": self.task_spec_sampler.state_dict(),
+        }
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        task_spec_state = state.get("task_spec_sampler_state", None)
+        if task_spec_state is not None:
+            self.task_spec_sampler.load_state_dict(task_spec_state)
