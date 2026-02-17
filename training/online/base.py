@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Dict, List, Literal, Optional, Sequence, Type, Union
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -73,10 +74,11 @@ def task_sampler_args_builder(
         ), f"Hdf5TaskSpecs.total_procs ({task_specs.total_procs}) must match total_processes ({total_processes})"
         selected_task_specs = task_specs
         selected_house_inds = [
-            task_spec["house_index"] for task_spec in selected_task_specs #  if int(task_spec["house_index"]) != 76
+            task_spec["house_index"] for task_spec in selected_task_specs
         ]
         assert len(selected_house_inds) > 0, "No house indices found in selected task specs!"
         selected_houses = houses.select(selected_house_inds)
+        print("Number of selected tasks:", len(selected_houses), "Number of selected houses:", np.unique(selected_house_inds).shape[0])
     else:
         raise NotImplementedError(
             f"task_specs must be LazyJsonTaskSpecs or Hdf5TaskSpecs not {type(task_specs)}"

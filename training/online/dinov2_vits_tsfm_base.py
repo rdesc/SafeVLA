@@ -69,6 +69,9 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     wandb_entity: str = ""
     collision_penalty: float = -0.00
     lr: float = 2e-5
+    shaping_weight: float = 0.0  # used in e.g. ObjectNavRewardShaper
+    step_penalty: float = 0.0  # e.g. -0.01
+    goal_success_reward: float = 10.0
 
     # preprocess params
     rgb_height: int = 224
@@ -94,7 +97,7 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     grpo_group_advantage_eps: float = 1e-5
     grpo_per_step_advantage: bool = False
     max_stage_steps: int = int(1e9)
-    train_steps_value_network: int = 20000
+    train_steps_value_network: int = 200000
     
     num_mini_batch: int = 1
     update_repeats: int = 4  # number of iterations per update
@@ -102,7 +105,7 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     gamma: float = 0.99
     gae_lambda: float = 0.95
 
-    use_constraints: bool = False
+    use_constraints: bool = False  # if use_grpo is False, and use_constraints is True, then use the original SafeVLA constrained PPO setup
     advantage_method: str = "scalarize_advantages"
     constraints_thresholds: Optional[Sequence[float]] = None
     lagrangian_multiplier_init: float = 0.001
@@ -122,10 +125,10 @@ class DinoV2ViTSTSFMBase(BaseConfig):
 
     def make_sampler_fn(self, **kwargs):
         kwargs["task_args"]["reward_config"] = RewardConfig(
-            step_penalty=0.00,
-            goal_success_reward=10.0,
+            step_penalty=self.params.step_penalty,  # -0.01
+            goal_success_reward=self.params.goal_success_reward,  # 10.0
             failed_stop_reward=0.0,
-            shaping_weight=0.0,
+            shaping_weight=self.params.shaping_weight,  # 1.0
             reached_horizon_reward=0.0,
             positive_only_reward=False,
             failed_action_penalty=self.params.collision_penalty,
@@ -330,7 +333,7 @@ class DinoV2ViTSTSFMBase(BaseConfig):
                 update_repeats=self.params.update_repeats,
                 max_grad_norm=0.5,
                 named_losses={
-                    "ppo_log_loss": SafeGRPOLogGrad(**NewGRPOConfig),
+                    "grpo_log_loss": SafeGRPOLogGrad(**NewGRPOConfig),
                 },
                 # "safe_ppo_value_loss": SafePPOValue(clip_param=0.1, use_clipped_value_loss=False)},
                 gamma=self.params.gamma,
@@ -338,7 +341,7 @@ class DinoV2ViTSTSFMBase(BaseConfig):
                 gae_lambda=self.params.gae_lambda,
                 pipeline_stages=[
                     PipelineStage(
-                        loss_names=["ppo_value_loss", "safe_ppo_value_loss"],
+                        loss_names=["grpo_log_loss"],
                         max_stage_steps=self.params.max_stage_steps,
                         training_settings=TrainingSettings(
                             num_steps=self.params.num_steps_per_rollout,
@@ -388,7 +391,7 @@ class DinoV2ViTSTSFMBase(BaseConfig):
                         training_settings=TrainingSettings(
                             num_steps=self.params.num_steps_per_rollout,
                             metric_accumulate_interval=self.params.metric_accumulate_interval,
-                            advance_scene_rollout_period=self.params.steps_in_house_before_force_scene_advance // 128,
+                            advance_scene_rollout_period=max(1, self.params.steps_in_house_before_force_scene_advance // 128),
                         ),
                     ),
                     PipelineStage(
@@ -397,7 +400,7 @@ class DinoV2ViTSTSFMBase(BaseConfig):
                         training_settings=TrainingSettings(
                             num_steps=self.params.num_steps_per_rollout,
                             metric_accumulate_interval=self.params.metric_accumulate_interval,
-                            advance_scene_rollout_period=self.params.steps_in_house_before_force_scene_advance // 128,
+                            advance_scene_rollout_period=max(1, self.params.steps_in_house_before_force_scene_advance // 128),
                         ),
                     ),
                 ],

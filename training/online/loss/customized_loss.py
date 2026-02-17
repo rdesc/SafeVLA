@@ -315,6 +315,7 @@ class SafePPOLogGrad(PPO):
         )
         self.c_adv_key = "c_" + self.adv_key
         self._mask_out_other_rollouts = mask_out_other_rollouts
+        print("mask_out_other_rollouts:", mask_out_other_rollouts)
 
     def loss_per_step(
         self,
@@ -394,6 +395,8 @@ class SafePPOLogGrad(PPO):
                     value_loss = (
                         0.5
                         * (cast(torch.FloatTensor, batch["returns"]) - values).pow(2).mean()
+                          # TODO: make sure returns look ok, is it because index 0 is 0 in mask
+                          # TODO: make sure returns look ok 
                     )
 
         bias_norm = actor_critic_output.extras["bias_norm"]
@@ -437,7 +440,7 @@ class SafePPOLogGrad(PPO):
             step_count=step_count,
             batch=batch,
             actor_critic_output=actor_critic_output,
-            lagrangian_multiplier=kwargs.get("lagrangian_multiplier", torch.tensor(0.0)),
+            lagrangian_multiplier=kwargs["lagrangian_multiplier"],
         )
         losses = {
             key: (loss.mean(), weight)
@@ -460,21 +463,26 @@ class SafePPOLogGrad(PPO):
 
         return result
 
-class SafeGRPOLogGrad(PPO):
-    def __init__(self, *args, **kwargs):
-        """
-        Args:
-            action_loss_schedule: a function that takes the step count and returns the weight for the action loss
-        """
-        super().__init__(*args, **kwargs)
+class SafeGRPOLogGrad(AbstractActorCriticLoss):
+    def __init__(
+        self,
+        clip_param: float,
+        group_advantage_eps: float = 1e-5,
+        per_step_advantage: bool = False,
+    ):
+        super().__init__()
+        self.clip_param = clip_param
+        self.group_advantage_eps = group_advantage_eps
+        self.per_step_advantage = per_step_advantage
 
-    def _episode_advantages(self,
+    def _compute_advantages(self,
                             returns: torch.Tensor,
                             final_time_steps: torch.Tensor,
                             reward_weight: list,
                             constraint_weights: list,
                             costs: list,
-                            advantage_method: str):
+                            advantage_method: str,
+                            ) -> torch.Tensor:
         episode_returns = returns[final_time_steps, torch.arange(returns.shape[1])]
         
         # TODO: this is the last part right??!
@@ -489,9 +497,13 @@ class SafeGRPOLogGrad(PPO):
         mean_return = episode_returns.mean()
         std_return = episode_returns.std()
         
-        adv_reward = (episode_returns - mean_return) / (std_return + 1e-5)
-        
-        print("episode returns:", episode_returns, "adv_reward:", adv_reward)
+        if self.per_step_advantage:
+            adv_reward = (returns.squeeze() - mean_return) / (std_return + self.group_advantage_eps)
+            
+            # TODO: this is wrong!!!
+        else:
+            adv_reward = ((episode_returns - mean_return) / (std_return + 1e-5)).view(1, -1)
+            print("episode returns:", episode_returns.squeeze(), "adv_reward:", adv_reward.squeeze())
         
         return (
                 adv_reward,
@@ -512,8 +524,8 @@ class SafeGRPOLogGrad(PPO):
         *args,
         **kwargs,
     ):
-
         actions = cast(torch.LongTensor, batch["actions"])
+        rewards = cast(torch.FloatTensor, batch["rewards"])
         reward_weight = kwargs.get("reward_weight")  # float
         constraint_weights = kwargs.get("constraint_weights")  # list of floats
         advantage_method = kwargs.get("advantage_method")
@@ -525,58 +537,83 @@ class SafeGRPOLogGrad(PPO):
         action_log_probs = actor_critic_output.distributions.log_prob(actions)
         returns = cast(torch.FloatTensor, batch["returns"])
         
-        masks = cast(torch.FloatTensor, batch["masks"])
+        print("returns sum", returns.sum().item())
+        
+        masks = torch.clone(cast(torch.FloatTensor, batch["masks"]))
         masks[0] = 1.0  # ensure first step is valid 
         final_time_steps = masks.sum(dim=0).long().squeeze() - 1
-
-        episode_adv, episode_adv_stats = self._episode_advantages(returns,
-                                                                  final_time_steps,
-                                                                  reward_weight,
-                                                                  constraint_weights,
-                                                                  costs,
-                                                                  advantage_method,
-                                                                  )
-        group_adv = episode_adv.view(1, -1)
         
-        def add_trailing_dims(t: torch.Tensor):
-            assert len(t.shape) <= len(batch[self.adv_key].shape)
-            return t.view(
-                t.shape + ((1,) * (len(batch[self.adv_key].shape) - len(t.shape)))
-            )
+        episode_returns = returns[0]
+        
+        if self.per_step_advantage:
+            valid = masks > 0
+            valid_rewards = rewards[valid]
+            mu = valid_rewards.mean()
+            sigma = valid_rewards.std(unbiased=False).clamp_min(self.group_advantage_eps)
+            advs = ((rewards - mu) / sigma * masks).flip(0).cumsum(dim=0).squeeze().flip(0)  # TODO: this still seems broken
             
-        group_adv = add_trailing_dims(group_adv)
+            # mu = 1 / (final_time_steps.sum()) * rewards.cumsum(dim=0)[final_time_steps, torch.arange(rewards.shape[1])].sum()
+            # sigma = torch.sqrt(1 / (final_time_steps.sum()) * ((rewards - mu).pow(2)).cumsum(dim=0)[final_time_steps, torch.arange(rewards.shape[1])].sum())
+            # advs = (((rewards - mu) / (sigma + self.group_advantage_eps)) * masks).flip(0).cumsum(dim=0).squeeze().flip(0)
+            
+        else:
+            mu = episode_returns.mean()
+            sigma = episode_returns.std(unbiased=False).clamp_min(self.group_advantage_eps)
+            advs = ((episode_returns - mu) / (sigma)).view(1, -1)
+        
+        adv_stats = {
+            "group_return_mean": float(mu.item()),
+            "group_return_std": float(sigma.item()),
+            "group_return_max": float(episode_returns.max().item()),
+            "group_return_min": float(episode_returns.min().item()),
+        }
+        print("episode returns:", episode_returns.squeeze(), "advs:", advs.squeeze())
+        print(adv_stats)
+        
+        # advs, adv_stats = self._compute_advantages(rewards,
+        #                                            final_time_steps,
+        #                                            reward_weight,
+        #                                            constraint_weights,
+        #                                            costs,
+        #                                            advantage_method)
+
         clip_param = self.clip_param
         log_ratio = action_log_probs - batch["old_action_log_probs"]
         ratio = torch.exp(log_ratio)
         
-        ratio = add_trailing_dims(ratio)
         clamped_ratio = torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param)
 
-        surr1 = ratio * group_adv
-        surr2 = clamped_ratio * group_adv
+        surr1 = ratio * advs
+        surr2 = clamped_ratio * advs
         use_clamped = surr2 < surr1
         action_loss = -torch.where(cast(torch.Tensor, use_clamped), surr2, surr1)
 
-        valid_mask = add_trailing_dims(masks)
-        action_loss = action_loss * valid_mask
+        action_loss = ((action_loss * masks.squeeze()).sum(dim=0) / masks.sum(dim=0).squeeze()).mean()
 
-        total_loss = action_loss.sum() / valid_mask.sum()
+        for idx in range(masks.shape[1]):
+            assert masks[:, idx].sum() > 0, f"GRPO expected non-empty valid mask for step {idx}."
 
         result = (
-            total_loss,
+            action_loss,
             {
-                "action": float(total_loss.item()),
+                "action": float(action_loss.item()),
                 "log_ratio_mean": float(log_ratio.mean().item()),
                 "ratio_mean": float(ratio.mean().item()),
                 "clamped_ratio_mean": float(clamped_ratio.mean().item()),
                 "rollout_num_steps": actions.shape[0],
                 "rollout_avg_num_steps": float(final_time_steps.sum().item() / len(final_time_steps)),
                 "mean_reward_per_step": float((returns * masks).sum().item() / masks.sum().item()),
-                **episode_adv_stats
+                **adv_stats
             },
         )
 
         return result
+    
+# TODO: what if we try ppo without the baseline?
+# TODO: try GRPO without stdev
+# TODO: why is performance crashing like crazy when we set gamma to 0.90
+# TODO: try per step and with reward shaping!
+# TODO: try GRPO with the fixed norm
     
 
 class PPOStopGrad(PPO):
