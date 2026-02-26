@@ -43,6 +43,7 @@ class AbstractSPOCTaskSampler(TaskSampler):
         self.task_type = task_type
         self.controller_type = controller_type
         self.mode = mode
+        self.device = device
 
         self._given_controller = controller
 

@@ -67,6 +67,9 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     steps_in_house_before_force_scene_advance: int = 2000
     wandb_project: str = ""
     wandb_entity: str = ""
+    wandb_video_every_logs: int = 0
+    wandb_video_device: Optional[int] = 0
+    wandb_video_max_videos_per_log: int = 16
     collision_penalty: float = -0.00
     lr: float = 2e-5
     shaping_weight: float = 0.0  # used in e.g. ObjectNavRewardShaper
@@ -96,6 +99,12 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     grpo_clip_param: float = 0.1
     grpo_group_advantage_eps: float = 1e-5
     grpo_per_step_advantage: bool = False
+    grpo_use_lambda: bool = False
+    grpo_lambda: float = 0.98
+    grpo_lambda_gamma: float = 0.99
+    grpo_trace_style: str = "recent"  # one of {"recent", "both"}
+    grpo_trace_epsilon: float = 1e-4
+    grpo_advantage_clamp_min: Optional[float] = -0.1
     max_stage_steps: int = int(1e9)
     train_steps_value_network: int = 200000
     
@@ -111,7 +120,6 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     lagrangian_multiplier_init: float = 0.001
     lambda_lr: float = 0.035
     lambda_optimizer: str = "Adam"
-    
 
 
 class DinoV2ViTSTSFMBase(BaseConfig):
@@ -323,6 +331,13 @@ class DinoV2ViTSTSFMBase(BaseConfig):
                 clip_param=self.params.grpo_clip_param,
                 group_advantage_eps=self.params.grpo_group_advantage_eps,
                 per_step_advantage=self.params.grpo_per_step_advantage,
+                num_generations=self.params.grpo_num_generations,
+                use_grpo_lambda=self.params.grpo_use_lambda,
+                grpo_lambda=self.params.grpo_lambda,
+                grpo_gamma=self.params.grpo_lambda_gamma,
+                trace_style=self.params.grpo_trace_style,
+                trace_epsilon=self.params.grpo_trace_epsilon,
+                advantage_clamp_min=self.params.grpo_advantage_clamp_min,
             )
             
             return TrainingPipeline(
@@ -415,7 +430,11 @@ class DinoV2ViTSTSFMBase(BaseConfig):
             " Set these values when specifying the --config_kwargs when running the experiment."
         )
         return SimpleWandbLogging(
-            project=self.params.wandb_project, entity=self.params.wandb_entity
+            project=self.params.wandb_project,
+            entity=self.params.wandb_entity,
+            log_videos_every_n_logs=self.params.wandb_video_every_logs,
+            log_videos_from_device=self.params.wandb_video_device,
+            max_videos_per_log=self.params.wandb_video_max_videos_per_log
         )
 
 

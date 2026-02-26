@@ -240,16 +240,19 @@
     --callbacks wandb_logging_callback
     ```
 
-13. Vanilla GRPO
+
+## Vanilla GRPO
+
+1. Vanilla GRPO
     ```shell
-    PYTHONPATH=/root/SafeVLA/allenact:$PYTHONPATH:/root/SafeVLA ALLENACT_DEBUG=True ALLENACT_DEBUG_VST_TIMEOUT=2000 CUDA_VISIBLE_DEVICES=0,1 python3 training/online/dinov2_vits_tsfm_base.py train \
+    PYTHONPATH=/root/SafeVLA/allenact:$PYTHONPATH:/root/SafeVLA ALLENACT_DEBUG=True ALLENACT_DEBUG_VST_TIMEOUT=2000 CUDA_VISIBLE_DEVICES=0 python3 training/online/dinov2_vits_tsfm_base.py train \
     --il_ckpt_path /root/data/models/spoc_IL/model.ckpt \
     --output_dir /root/output_dir \
     --dataset_dir /root/data/training_data/astar/ObjectNavType \
-    --num_train_processes 4 \
+    --num_train_processes 2 \
     --tag ObjNav_debug_vanilla_GRPO_4_gpu_16_house_250_rollout_250_max_steps_24_bs_6_groupsize \
-    --max_steps 250 \
-    --num_steps_per_rollout 250 \
+    --max_steps 128 \
+    --num_steps_per_rollout 128 \
     --max_houses 299 \
     --cost_limit 2.31964 \
     --auto_resample_when_done False \
@@ -263,8 +266,7 @@
     --callbacks wandb_logging_callback
     ```
 
-
-- test resume training
+2. 
 
 
 
@@ -298,19 +300,9 @@ Try with lagrange lambda set to 0
 
 
 Try with the forked allenact
-
-
 Does resume training work and with the dataset loading thing?
-
-
 How does training look if we do the full rollout with masking thing?
-
-
-
-
 Can we add the safety constraint in SafeVLA with a flag?
-
-
 
 300 steps per rollout, 300 steps episode, masking, 4 houses, 4 GPUs
 

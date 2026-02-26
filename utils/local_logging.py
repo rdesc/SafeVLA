@@ -456,11 +456,12 @@ class WandbLoggingSensor(LocalLoggingSensor):
             dict(x=p["x"], y=0.25, z=p["z"]) for p in task._metrics["task_info"]["followed_path"]
         ]
 
-        path = env.get_top_down_path_view(agent_path)
+        path, _ = env.get_top_down_path_view(agent_path)
 
         return {
             "observations": task.observation_history,
-            "path": [path],  # path,
+            "path": [path],
+            "sampler_device": getattr(getattr(task, "task_sampler", None), "device", None),
             # "frames_with_logits": video_frames,
             **task._metrics,
         }

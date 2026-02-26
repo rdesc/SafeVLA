@@ -135,3 +135,13 @@ https://github.com/rdesc/allenact/commit/724c6ff35d6a8000083a8e6ea4ea447bc003a5c
 ```bash
 salloc -c 24 --mem=256G -t 3:00:00 --gres=gpu:a100l:4 --partition=short-unkillable --exclude=cn-g[001-007,009-010,014,017-020,022,024,027]
 ```
+
+## Confirm ai2thor is properly installed and vulkan works
+```python
+from ai2thor.platform import CloudRendering
+from ai2thor.controller import Controller
+print('imported pkgs, launching controller....')
+controller = Controller(platform=CloudRendering)
+print('launched controller')
+controller.step(dict(action='Initialize', gridSize=0.25))
+print('stepped with controller')

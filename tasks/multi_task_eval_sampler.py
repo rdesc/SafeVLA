@@ -38,9 +38,11 @@ class MultiTaskSampler(AbstractSPOCTaskSampler):
         prob_randomize_materials: float = 0,
         task_type: Optional[Type] = None,
         device: Optional[int] = None,
+        sampler_index: Optional[int] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**prepare_locals_for_super(locals()))
+        self.sampler_index = sampler_index
 
         assert (
             task_type is None
@@ -234,12 +236,16 @@ class MultiTaskSampler(AbstractSPOCTaskSampler):
                     f"Teleport failed in {self.current_house_index} at {task_info['starting_pose']}"
                 )
 
+        task_info["sampler_device"] = self.device
+        task_info["sampler_index"] = self.sampler_index
+
         self._last_sampled_task = REGISTERED_TASKS.get(task_info["task_type"])(
             controller=self.controller,
             task_info=task_info,
             **self.task_args,
             house=self.house_index_to_house[self.current_house_index],
             visualize=self.visualize,
+            task_sampler=self,
         )
         return self._last_sampled_task
 
