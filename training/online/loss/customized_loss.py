@@ -469,11 +469,144 @@ class SafeGRPOLogGrad(AbstractActorCriticLoss):
         clip_param: float,
         group_advantage_eps: float = 1e-5,
         per_step_advantage: bool = False,
+        num_generations: int = 1,
+        use_grpo_lambda: bool = False,
+        grpo_lambda: float = 0.95,
+        grpo_gamma: float = 0.99,
+        trace_style: str = "recent",
+        trace_epsilon: float = 0.0,
+        advantage_clamp_min: Optional[float] = None,
     ):
         super().__init__()
         self.clip_param = clip_param
         self.group_advantage_eps = group_advantage_eps
         self.per_step_advantage = per_step_advantage
+        self.num_generations = num_generations
+        self.use_grpo_lambda = use_grpo_lambda  # from paper https://arxiv.org/abs/2510.00194
+        self.grpo_lambda = grpo_lambda
+        self.grpo_gamma = grpo_gamma
+        self.trace_style = trace_style
+        self.trace_epsilon = trace_epsilon
+        self.advantage_clamp_min = advantage_clamp_min
+        if self.num_generations <= 0:
+            raise ValueError("`num_generations` must be >= 1 for GRPO.")
+        if self.use_grpo_lambda:
+            if not 0.0 <= self.grpo_lambda <= 1.0:
+                raise ValueError(f"Expected grpo_lambda in [0, 1], got {self.grpo_lambda}.")
+            if not 0.0 < self.grpo_gamma <= 1.0:
+                raise ValueError(f"Expected grpo_gamma in (0, 1], got {self.grpo_gamma}.")
+            if self.trace_style not in {"recent", "both"}:
+                raise ValueError(
+                    f"Unsupported trace_style `{self.trace_style}`. Expected one of: recent, both."
+                )
+            if not 0.0 <= self.trace_epsilon <= 1.0:
+                raise ValueError(
+                    f"Expected trace_epsilon in [0, 1], got {self.trace_epsilon}."
+                )
+
+    @staticmethod
+    def _squeeze_trailing_dim(t: torch.Tensor) -> torch.Tensor:
+        if t.dim() > 2 and t.shape[-1] == 1:
+            return t.squeeze(-1)
+        return t
+
+    def _sampler_group_ids(  # enables having multiple groups on 1 device
+        self, batch: ObservationType, num_samplers: int, device: torch.device
+    ) -> torch.LongTensor:
+        if "sampler_ids" in batch:
+            sampler_ids = torch.as_tensor(
+                batch["sampler_ids"], dtype=torch.long, device=device
+            )
+            if sampler_ids.numel() != num_samplers:
+                raise ValueError(
+                    f"Expected `sampler_ids` with {num_samplers} entries but found {sampler_ids.numel()}."
+                )
+        else:
+            sampler_ids = torch.arange(num_samplers, device=device, dtype=torch.long)
+
+        group_ids = torch.div(sampler_ids, self.num_generations, rounding_mode="floor")
+        unique_group_ids = torch.unique(group_ids, sorted=True)
+        for group_id in unique_group_ids.tolist():
+            count = int((group_ids == group_id).sum().item())
+            if count != self.num_generations:
+                raise ValueError(
+                    "GRPO mini-batch does not contain full groups. "
+                    f"Expected {self.num_generations} samplers for group {group_id}, got {count}. "
+                    "Use num_mini_batch=1 or ensure mini-batches align with groups."
+                )
+        return group_ids
+
+    def _compute_lambda_trace_log_ratio(
+        self, log_ratio: torch.Tensor, masks: torch.Tensor
+    ) -> torch.Tensor:
+        """Computes weighted cumulative log-ratio using GRPO-lambda trace weights."""
+        trace_log_ratio = torch.zeros_like(log_ratio)
+        num_steps, num_samplers = log_ratio.shape
+
+        cache: Dict[int, torch.Tensor] = {}
+        decay = torch.tensor(
+            self.grpo_gamma * self.grpo_lambda,
+            device=log_ratio.device,
+            dtype=log_ratio.dtype,
+        )
+
+        def weight_matrix(length: int) -> torch.Tensor:
+            if length in cache:
+                return cache[length]
+
+            idx = torch.arange(length, device=log_ratio.device, dtype=log_ratio.dtype)
+            row = idx[:, None]
+            col = idx[None, :]
+            lower = col <= row
+            lag = row - col
+
+            decay_lag = torch.pow(decay, lag)
+            if self.trace_style == "both":
+                # Section 3.2, Eq. (2): tr(t,l)=max((gamma*lambda)^l, (gamma*lambda)^(t-l)).
+                # In matrix form with token indices row=t and col=j=t-l:
+                # tr(t,j)=max((gamma*lambda)^(t-j), (gamma*lambda)^j).
+                decay_col = torch.pow(decay, col)
+                weights = torch.maximum(decay_lag, decay_col)
+            else:
+                # Classic eligibility trace (recent).
+                weights = decay_lag
+
+            if self.trace_epsilon > 0.0:
+                eps = torch.tensor(
+                    self.trace_epsilon, device=log_ratio.device, dtype=log_ratio.dtype
+                )
+                weights = torch.maximum(weights, eps)
+
+            weights = weights * lower.to(log_ratio.dtype)
+            diag = torch.arange(length, device=log_ratio.device)
+            weights[diag, diag] = 1.0
+            cache[length] = weights
+            return weights
+
+        valid = masks > 0
+        for sampler_idx in range(num_samplers):
+            col_valid = valid[:, sampler_idx]
+            t = 0
+            while t < num_steps:
+                while t < num_steps and not bool(col_valid[t].item()):
+                    t += 1
+                if t >= num_steps:
+                    break
+
+                start = t
+                while t < num_steps and bool(col_valid[t].item()):
+                    t += 1
+                end = t
+
+                seg_len = end - start
+                if seg_len <= 0:
+                    continue
+
+                weights = weight_matrix(seg_len)
+                seg_log_ratio = log_ratio[start:end, sampler_idx]
+                trace_log_ratio[start:end, sampler_idx] = weights @ seg_log_ratio
+
+        return trace_log_ratio * valid.to(log_ratio.dtype)
 
     def _compute_advantages(self,
                             returns: torch.Tensor,
@@ -525,95 +658,138 @@ class SafeGRPOLogGrad(AbstractActorCriticLoss):
         **kwargs,
     ):
         actions = cast(torch.LongTensor, batch["actions"])
-        rewards = cast(torch.FloatTensor, batch["rewards"])
-        reward_weight = kwargs.get("reward_weight")  # float
-        constraint_weights = kwargs.get("constraint_weights")  # list of floats
-        advantage_method = kwargs.get("advantage_method")
-        costs = kwargs.get("costs")  # list of tensors
-        
-        print("tensor shape in computing loss:", actions.shape)
-        print("reward and constraint weights", reward_weight, constraint_weights)
-        
-        action_log_probs = actor_critic_output.distributions.log_prob(actions)
-        returns = cast(torch.FloatTensor, batch["returns"])
-        
-        print("returns sum", returns.sum().item())
-        
-        masks = torch.clone(cast(torch.FloatTensor, batch["masks"]))
+        rewards = self._squeeze_trailing_dim(cast(torch.FloatTensor, batch["rewards"]))
+
+        action_log_probs = self._squeeze_trailing_dim(
+            actor_critic_output.distributions.log_prob(actions)
+        )
+        returns = self._squeeze_trailing_dim(cast(torch.FloatTensor, batch["returns"]))
+
+        masks = torch.clone(
+            self._squeeze_trailing_dim(cast(torch.FloatTensor, batch["masks"]))
+        )
         masks[0] = 1.0  # ensure first step is valid 
-        final_time_steps = masks.sum(dim=0).long().squeeze() - 1
-        
+        final_time_steps = masks.sum(dim=0).long() - 1
+
         episode_returns = returns[0]
-        
+        num_samplers = int(episode_returns.shape[0])
+        group_ids = self._sampler_group_ids(
+            batch=batch, num_samplers=num_samplers, device=episode_returns.device
+        )
+
+        unique_group_ids = torch.unique(group_ids, sorted=True)
+        groupwise_means = []
+        groupwise_stds = []
+
         if self.per_step_advantage:
-            valid = masks > 0
-            valid_rewards = rewards[valid]
-            mu = valid_rewards.mean()
-            sigma = valid_rewards.std(unbiased=False).clamp_min(self.group_advantage_eps)
-            advs = ((rewards - mu) / sigma * masks).flip(0).cumsum(dim=0).squeeze().flip(0)  # TODO: this still seems broken
-            
-            # mu = 1 / (final_time_steps.sum()) * rewards.cumsum(dim=0)[final_time_steps, torch.arange(rewards.shape[1])].sum()
-            # sigma = torch.sqrt(1 / (final_time_steps.sum()) * ((rewards - mu).pow(2)).cumsum(dim=0)[final_time_steps, torch.arange(rewards.shape[1])].sum())
-            # advs = (((rewards - mu) / (sigma + self.group_advantage_eps)) * masks).flip(0).cumsum(dim=0).squeeze().flip(0)
-            
+            advs = torch.zeros_like(rewards)
+            for group_id in unique_group_ids.tolist():
+                in_group = group_ids == group_id
+                group_rewards = rewards[:, in_group]
+                group_masks = masks[:, in_group] > 0
+                valid_group_rewards = group_rewards[group_masks]
+                if valid_group_rewards.numel() == 0:
+                    raise ValueError(
+                        f"GRPO expected non-empty valid rewards for group {group_id}."
+                    )
+
+                mu = valid_group_rewards.mean()
+                sigma = valid_group_rewards.std(unbiased=False).clamp_min(
+                    self.group_advantage_eps
+                )
+                groupwise_means.append(float(mu.item()))
+                groupwise_stds.append(float(sigma.item()))
+                normalized_rewards = ((group_rewards - mu) / sigma) * group_masks.float()
+                advs[:, in_group] = normalized_rewards.flip(0).cumsum(dim=0).flip(0)
         else:
-            mu = episode_returns.mean()
-            sigma = episode_returns.std(unbiased=False).clamp_min(self.group_advantage_eps)
-            advs = ((episode_returns - mu) / (sigma)).view(1, -1)
-        
+            advs = torch.zeros_like(episode_returns)
+            for group_id in unique_group_ids.tolist():
+                in_group = group_ids == group_id
+                group_episode_returns = episode_returns[in_group]
+                mu = group_episode_returns.mean()
+                sigma = group_episode_returns.std(unbiased=False).clamp_min(
+                    self.group_advantage_eps
+                )
+                groupwise_means.append(float(mu.item()))
+                groupwise_stds.append(float(sigma.item()))
+                advs[in_group] = (group_episode_returns - mu) / sigma
+            advs = advs.view(1, -1)
+
+        if self.advantage_clamp_min is not None:
+            clamped_mask = advs < self.advantage_clamp_min
+            advs = torch.clamp(advs, min=self.advantage_clamp_min)
+            adv_clamped_frac = float(clamped_mask.float().mean().item())
+        else:
+            adv_clamped_frac = 0.0
+
         adv_stats = {
-            "group_return_mean": float(mu.item()),
-            "group_return_std": float(sigma.item()),
-            "group_return_max": float(episode_returns.max().item()),
-            "group_return_min": float(episode_returns.min().item()),
+            "return_mean": float(episode_returns.mean().item()),
+            "return_std": float(
+                episode_returns.std(unbiased=False)
+                .clamp_min(self.group_advantage_eps)
+                .item()
+            ),
+            "return_max": float(episode_returns.max().item()),
+            "return_min": float(episode_returns.min().item()),
+            "groupwise_return_mean": float(
+                sum(groupwise_means) / max(len(groupwise_means), 1)
+            ),
+            "groupwise_return_std": float(
+                sum(groupwise_stds) / max(len(groupwise_stds), 1)
+            ),
+            "adv_clamped_frac": adv_clamped_frac,
         }
-        print("episode returns:", episode_returns.squeeze(), "advs:", advs.squeeze())
-        print(adv_stats)
-        
-        # advs, adv_stats = self._compute_advantages(rewards,
-        #                                            final_time_steps,
-        #                                            reward_weight,
-        #                                            constraint_weights,
-        #                                            costs,
-        #                                            advantage_method)
 
         clip_param = self.clip_param
-        log_ratio = action_log_probs - batch["old_action_log_probs"]
-        ratio = torch.exp(log_ratio)
-        
-        clamped_ratio = torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param)
+        old_action_log_probs = self._squeeze_trailing_dim(
+            cast(torch.FloatTensor, batch["old_action_log_probs"])
+        )
+        log_ratio = action_log_probs - old_action_log_probs
+        raw_ratio = torch.exp(log_ratio)
 
-        surr1 = ratio * advs
+        if self.use_grpo_lambda:
+            ratio_log_for_loss = self._compute_lambda_trace_log_ratio(log_ratio, masks)
+            ratio_for_loss = torch.exp(ratio_log_for_loss)
+        else:
+            ratio_log_for_loss = log_ratio
+            ratio_for_loss = raw_ratio
+
+        while advs.dim() < ratio_for_loss.dim():
+            advs = advs.unsqueeze(-1)
+
+        clamped_ratio = torch.clamp(ratio_for_loss, 1.0 - clip_param, 1.0 + clip_param)
+
+        surr1 = ratio_for_loss * advs
         surr2 = clamped_ratio * advs
         use_clamped = surr2 < surr1
         action_loss = -torch.where(cast(torch.Tensor, use_clamped), surr2, surr1)
 
-        action_loss = ((action_loss * masks.squeeze()).sum(dim=0) / masks.sum(dim=0).squeeze()).mean()
+        masks_for_loss = masks
+        while masks_for_loss.dim() < action_loss.dim():
+            masks_for_loss = masks_for_loss.unsqueeze(-1)
+        action_loss = (
+            (action_loss * masks_for_loss).sum(dim=0)
+            / masks_for_loss.sum(dim=0).clamp(min=1.0)
+        ).mean()
 
         for idx in range(masks.shape[1]):
             assert masks[:, idx].sum() > 0, f"GRPO expected non-empty valid mask for step {idx}."
-
+        
         result = (
             action_loss,
             {
                 "action": float(action_loss.item()),
                 "log_ratio_mean": float(log_ratio.mean().item()),
-                "ratio_mean": float(ratio.mean().item()),
+                "ratio_mean": float(ratio_for_loss.mean().item()),
                 "clamped_ratio_mean": float(clamped_ratio.mean().item()),
                 "rollout_num_steps": actions.shape[0],
-                "rollout_avg_num_steps": float(final_time_steps.sum().item() / len(final_time_steps)),
-                "mean_reward_per_step": float((returns * masks).sum().item() / masks.sum().item()),
+                "rollout_avg_num_steps": float(masks.sum(dim=0).float().mean().item()),
+                "mean_reward_per_step": float((rewards * masks).sum().item() / masks.sum().clamp(min=1.0).item()),
                 **adv_stats
             },
         )
 
         return result
-    
-# TODO: what if we try ppo without the baseline?
-# TODO: try GRPO without stdev
-# TODO: why is performance crashing like crazy when we set gamma to 0.90
-# TODO: try per step and with reward shaping!
-# TODO: try GRPO with the fixed norm
     
 
 class PPOStopGrad(PPO):

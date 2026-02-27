@@ -36,6 +36,7 @@ def task_sampler_args_builder(
     action_names: List[str],
     max_steps: int,
     process_ind: int = 0,
+    sampler_index: Optional[int] = None,
     total_processes: int = 1,
     controller_args: Dict[str, Any] = STRETCH_ENV_ARGS,
     controller_type: Type = StretchController,
@@ -47,6 +48,7 @@ def task_sampler_args_builder(
     shuffle_task_specs: Optional[bool] = None,
     house_inds_seed: Optional[int] = None,
     auto_resample_when_done: bool = True,
+    visualize: bool = False,
 ):
     assert on_server or max_houses is not None, (
         "max_houses must be provided if not on server. "
@@ -78,7 +80,7 @@ def task_sampler_args_builder(
         ]
         assert len(selected_house_inds) > 0, "No house indices found in selected task specs!"
         selected_houses = houses.select(selected_house_inds)
-        print("Number of selected tasks:", len(selected_houses), "Number of selected houses:", np.unique(selected_house_inds).shape[0])
+        print("Number of selected tasks:", len(selected_houses), ", Number of selected houses:", np.unique(selected_house_inds).shape[0])
     else:
         raise NotImplementedError(
             f"task_specs must be LazyJsonTaskSpecs or Hdf5TaskSpecs not {type(task_specs)}"
@@ -121,7 +123,8 @@ def task_sampler_args_builder(
         "controller_args": controller_args,
         "controller_type": controller_type,
         "device": device,
-        "visualize": False,
+        "sampler_index": process_ind if sampler_index is None else sampler_index,
+        "visualize": visualize,
         "always_allocate_a_new_stretch_controller_when_reset": True,
         "retain_agent_pose": False,
         "prob_randomize_materials": prob_randomize_materials,
@@ -142,6 +145,7 @@ class BaseConfigParams:
     max_houses: Optional[int] = None
     max_task_specs: Optional[int] = None
     auto_resample_when_done: bool = True
+    visualize: bool = False
     tag: str = "ObjectNavType-RL"
 
 
@@ -295,7 +299,7 @@ class BaseConfig(ExperimentConfig, ABC):
         return params
 
     def make_sampler_fn(self, **kwargs) -> TaskSampler:
-        print("kwargs", kwargs)
+        # print("kwargs", kwargs)
         return MultiTaskSampler(**kwargs)
 
     def get_sampler_args(
@@ -321,17 +325,25 @@ class BaseConfig(ExperimentConfig, ABC):
         if mode == "train" and use_grpo:
             num_generations = self.params.grpo_num_generations
             num_workers = len(self.get_devices(mode)) * self.params.distributed_nodes
+            if num_generations <= 0:
+                raise ValueError("GRPO requires grpo_num_generations to be >= 1")
             if total_processes % num_workers != 0:
                 raise ValueError(
                     "GRPO requires num_train_processes to be divisible by "
                     "the number of workers"
                 )
             samplers_per_worker = total_processes // num_workers
-            if num_generations != samplers_per_worker:
+            if samplers_per_worker % num_generations != 0:
                 raise ValueError(
-                    "GRPO requires grpo_num_generations to match samplers_per_worker"
-                ) # TODO actually maybe we dont need this requirement
-            group_total_processes = num_workers
+                    "GRPO requires samplers_per_worker to be divisible by "
+                    "grpo_num_generations so groups do not span workers"
+                )
+            if total_processes % num_generations != 0:
+                raise ValueError(
+                    "GRPO requires num_train_processes to be divisible by "
+                    "grpo_num_generations"
+                )
+            group_total_processes = total_processes // num_generations
             group_process_ind = process_ind // num_generations
             house_inds_seed = group_process_ind
             
@@ -341,6 +353,7 @@ class BaseConfig(ExperimentConfig, ABC):
         
         return task_sampler_args_builder(
             process_ind=group_process_ind,
+            sampler_index=process_ind,
             total_processes=group_total_processes,
             devices=devices,
             deterministic_cudnn=deterministic_cudnn,
@@ -360,7 +373,8 @@ class BaseConfig(ExperimentConfig, ABC):
             seed=seed,
             shuffle_task_specs=True,
             house_inds_seed=house_inds_seed,
-            auto_resample_when_done=self.params.auto_resample_when_done
+            auto_resample_when_done=self.params.auto_resample_when_done,
+            visualize=self.params.visualize,
         )
 
     def train_task_sampler_args(
