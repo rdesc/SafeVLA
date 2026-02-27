@@ -1,0 +1,256 @@
+Bootstrap: docker
+From: nvidia/cuda:12.2.0-devel-ubuntu22.04
+
+%labels
+    Author SafeVLA Team
+    Version v5
+    Description "CUDA 12.2 + Vulkan + Python 3.10 + SafeVLA dependencies"
+
+%files
+    requirements.txt /opt/requirements.txt
+    scripts/install.sh /opt/install.sh
+
+%environment
+    export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+    export VK_LAYER_PATH=/usr/share/vulkan/explicit_layer.d:/usr/share/vulkan/implicit_layer.d
+    export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+    export PYTHONNOUSERSITE=1
+    export NLTK_DATA=/usr/local/share/nltk_data
+    export NODEVICE_SELECT=1
+    export DISPLAY=
+
+%post
+    set -e
+
+    export DEBIAN_FRONTEND=noninteractive
+    export TZ=Etc/UTC
+
+    ############################################################
+    # System dependencies
+    ############################################################
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        tzdata build-essential wget curl git ca-certificates pkg-config software-properties-common \
+        python3-dev python3-pip python3-venv \
+        libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
+        libgl1-mesa-dev libglu1-mesa-dev libegl1 libegl-mesa0 libegl-dev \
+        libvulkan1 vulkan-tools mesa-vulkan-drivers libvulkan-dev \
+        xvfb ffmpeg swig \
+        libfcl-dev liboctomap-dev \
+        libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
+        espeak-ng
+    rm -rf /var/lib/apt/lists/*
+
+    ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime
+    dpkg-reconfigure -f noninteractive tzdata
+
+    ############################################################
+    # CMake >= 3.24
+    ############################################################
+    CMAKE_VERSION=3.27.9
+    wget -q https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.sh -O /tmp/cmake.sh
+    bash /tmp/cmake.sh --skip-license --prefix=/usr/local
+    rm -f /tmp/cmake.sh
+
+    ############################################################
+    # Create NVIDIA Vulkan ICD for use with --nv
+    # --nv mounts libGLX_nvidia.so.0 into the container;
+    # this ICD file tells the Vulkan loader to use it.
+    ############################################################
+    cat > /usr/share/vulkan/icd.d/nvidia_icd.json <<'ICDJSON'
+{
+    "file_format_version": "1.0.0",
+    "ICD": {
+        "library_path": "libGLX_nvidia.so.0",
+        "api_version": "1.3.0"
+    }
+}
+ICDJSON
+
+    ############################################################
+    # Verify CUDA & Vulkan
+    ############################################################
+    nvcc --version || true
+    ldconfig -p | grep -i vulkan || true
+
+    ############################################################
+    # Upgrade pip
+    ############################################################
+    pip3 install --no-cache-dir --upgrade pip setuptools wheel
+
+    ############################################################
+    # PyTorch ecosystem (from cu121 index)
+    ############################################################
+    pip3 install --no-cache-dir \
+        torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 \
+        --index-url https://download.pytorch.org/whl/cu121
+
+    pip3 install --no-cache-dir xformers==0.0.28.post1 \
+        --index-url https://download.pytorch.org/whl/cu121
+
+    ############################################################
+    # ai2thor (from Allen AI's PyPI index, pinned to commit)
+    ############################################################
+    pip3 install --no-cache-dir \
+        --extra-index-url https://ai2thor-pypi.allenai.org \
+        ai2thor==0+966bd7758586e05d18f6181f459c0e90ba318bec
+
+    ############################################################
+    # Remaining Python packages from requirements.txt
+    ############################################################
+    sed -i 's|uv pip install|pip3 install --no-cache-dir|g' /opt/install.sh
+    sed -i 's|REQ=./requirements.txt|REQ=/opt/requirements.txt|g' /opt/install.sh
+    bash /opt/install.sh
+    rm -f /opt/requirements.txt /opt/install.sh
+
+    ############################################################
+    # Debugging tools
+    ############################################################
+    pip3 install --no-cache-dir remote_pdb
+
+    ############################################################
+    # NLTK wordnet data
+    ############################################################
+    mkdir -p /usr/local/share/nltk_data
+    python3 -c "import nltk; nltk.download('wordnet2022', download_dir='/usr/local/share/nltk_data')"
+    mv /usr/local/share/nltk_data/corpora/wordnet2022 /usr/local/share/nltk_data/corpora/wordnet
+
+    ############################################################
+    # Verify key packages
+    ############################################################
+    python3 -c "import torch; print(f'PyTorch {torch.__version__}, CUDA available: {torch.cuda.is_available()}')"
+    python3 -c "import ai2thor; print(f'ai2thor installed')"
+    python3 -c "import xformers; print(f'xformers {xformers.__version__}')"
+    python3 -c "import transformers; print(f'transformers {transformers.__version__}')"
+
+%runscript
+    echo "Container ready."
+    exec "$@"
+[rdesc@l2.nibi SafeVLA]$ cat safevla.def
+Bootstrap: docker
+From: nvidia/cuda:12.2.0-devel-ubuntu22.04
+
+%labels
+    Author SafeVLA Team
+    Version v5
+    Description "CUDA 12.2 + Vulkan + Python 3.10 + SafeVLA dependencies"
+
+%files
+    requirements.txt /opt/requirements.txt
+    scripts/install.sh /opt/install.sh
+
+%environment
+    export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+    export VK_LAYER_PATH=/usr/share/vulkan/explicit_layer.d:/usr/share/vulkan/implicit_layer.d
+    export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+    export PYTHONNOUSERSITE=1
+    export NLTK_DATA=/usr/local/share/nltk_data
+    export NODEVICE_SELECT=1
+    export DISPLAY=
+
+%post
+    set -e
+
+    export DEBIAN_FRONTEND=noninteractive
+    export TZ=Etc/UTC
+
+    ############################################################
+    # System dependencies
+    ############################################################
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        tzdata build-essential wget curl git ca-certificates pkg-config software-properties-common \
+        python3-dev python3-pip python3-venv \
+        libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
+        libgl1-mesa-dev libglu1-mesa-dev libegl1 libegl-mesa0 libegl-dev \
+        libvulkan1 vulkan-tools mesa-vulkan-drivers libvulkan-dev \
+        xvfb ffmpeg swig \
+        libfcl-dev liboctomap-dev \
+        libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
+        espeak-ng
+    rm -rf /var/lib/apt/lists/*
+
+    ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime
+    dpkg-reconfigure -f noninteractive tzdata
+
+    ############################################################
+    # CMake >= 3.24
+    ############################################################
+    CMAKE_VERSION=3.27.9
+    wget -q https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.sh -O /tmp/cmake.sh
+    bash /tmp/cmake.sh --skip-license --prefix=/usr/local
+    rm -f /tmp/cmake.sh
+
+    ############################################################
+    # Create NVIDIA Vulkan ICD for use with --nv
+    # --nv mounts libGLX_nvidia.so.0 into the container;
+    # this ICD file tells the Vulkan loader to use it.
+    ############################################################
+    cat > /usr/share/vulkan/icd.d/nvidia_icd.json <<'ICDJSON'
+{
+    "file_format_version": "1.0.0",
+    "ICD": {
+        "library_path": "libGLX_nvidia.so.0",
+        "api_version": "1.3.0"
+    }
+}
+ICDJSON
+
+    ############################################################
+    # Verify CUDA & Vulkan
+    ############################################################
+    nvcc --version || true
+    ldconfig -p | grep -i vulkan || true
+
+    ############################################################
+    # Upgrade pip
+    ############################################################
+    pip3 install --no-cache-dir --upgrade pip setuptools wheel
+
+    ############################################################
+    # PyTorch ecosystem (from cu121 index)
+    ############################################################
+    pip3 install --no-cache-dir \
+        torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 \
+        --index-url https://download.pytorch.org/whl/cu121
+
+    pip3 install --no-cache-dir xformers==0.0.28.post1 \
+        --index-url https://download.pytorch.org/whl/cu121
+
+    ############################################################
+    # ai2thor (from Allen AI's PyPI index, pinned to commit)
+    ############################################################
+    pip3 install --no-cache-dir \
+        --extra-index-url https://ai2thor-pypi.allenai.org \
+        ai2thor==0+966bd7758586e05d18f6181f459c0e90ba318bec
+
+    ############################################################
+    # Remaining Python packages from requirements.txt
+    ############################################################
+    sed -i 's|REQ=./requirements.txt|REQ=/opt/requirements.txt|g' /opt/install.sh
+    bash /opt/install.sh
+    rm -f /opt/requirements.txt /opt/install.sh
+
+    ############################################################
+    # Debugging tools
+    ############################################################
+    pip3 install --no-cache-dir remote_pdb
+
+    ############################################################
+    # NLTK wordnet data
+    ############################################################
+    mkdir -p /usr/local/share/nltk_data
+    python3 -c "import nltk; nltk.download('wordnet2022', download_dir='/usr/local/share/nltk_data')"
+    mv /usr/local/share/nltk_data/corpora/wordnet2022 /usr/local/share/nltk_data/corpora/wordnet
+
+    ############################################################
+    # Verify key packages
+    ############################################################
+    python3 -c "import torch; print(f'PyTorch {torch.__version__}, CUDA available: {torch.cuda.is_available()}')"
+    python3 -c "import ai2thor; print(f'ai2thor installed')"
+    python3 -c "import xformers; print(f'xformers {xformers.__version__}')"
+    python3 -c "import transformers; print(f'transformers {transformers.__version__}')"
+
+%runscript
+    echo "Container ready."
+    exec "$@"
