@@ -468,26 +468,25 @@ class SafeGRPOLogGrad(AbstractActorCriticLoss):
         self,
         clip_param: float,
         group_advantage_eps: float = 1e-5,
-        per_step_advantage: bool = False,
         num_generations: int = 1,
         use_grpo_lambda: bool = False,
         grpo_lambda: float = 0.95,
         grpo_gamma: float = 0.99,
-        trace_style: str = "recent",
-        trace_epsilon: float = 0.0,
         advantage_clamp_min: Optional[float] = None,
+        advantage_method: str = "scalarize_advantages",
+        entropy_coef: float = 0.0,
     ):
         super().__init__()
+        assert advantage_method in ("scalarize_advantages", "scalarize_rewards")
         self.clip_param = clip_param
         self.group_advantage_eps = group_advantage_eps
-        self.per_step_advantage = per_step_advantage
         self.num_generations = num_generations
-        self.use_grpo_lambda = use_grpo_lambda  # from paper https://arxiv.org/abs/2510.00194
+        self.use_grpo_lambda = use_grpo_lambda  # ε-weight variant from https://arxiv.org/abs/2510.00194
         self.grpo_lambda = grpo_lambda
         self.grpo_gamma = grpo_gamma
-        self.trace_style = trace_style
-        self.trace_epsilon = trace_epsilon
         self.advantage_clamp_min = advantage_clamp_min
+        self.advantage_method = advantage_method
+        self.entropy_coef = entropy_coef
         if self.num_generations <= 0:
             raise ValueError("`num_generations` must be >= 1 for GRPO.")
         if self.use_grpo_lambda:
@@ -495,14 +494,6 @@ class SafeGRPOLogGrad(AbstractActorCriticLoss):
                 raise ValueError(f"Expected grpo_lambda in [0, 1], got {self.grpo_lambda}.")
             if not 0.0 < self.grpo_gamma <= 1.0:
                 raise ValueError(f"Expected grpo_gamma in (0, 1], got {self.grpo_gamma}.")
-            if self.trace_style not in {"recent", "both"}:
-                raise ValueError(
-                    f"Unsupported trace_style `{self.trace_style}`. Expected one of: recent, both."
-                )
-            if not 0.0 <= self.trace_epsilon <= 1.0:
-                raise ValueError(
-                    f"Expected trace_epsilon in [0, 1], got {self.trace_epsilon}."
-                )
 
     @staticmethod
     def _squeeze_trailing_dim(t: torch.Tensor) -> torch.Tensor:
@@ -536,54 +527,16 @@ class SafeGRPOLogGrad(AbstractActorCriticLoss):
                 )
         return group_ids
 
-    def _compute_lambda_trace_log_ratio(
-        self, log_ratio: torch.Tensor, masks: torch.Tensor
-    ) -> torch.Tensor:
-        """Computes weighted cumulative log-ratio using GRPO-lambda trace weights."""
-        trace_log_ratio = torch.zeros_like(log_ratio)
-        num_steps, num_samplers = log_ratio.shape
+    def _compute_epsilon_weights(self, masks: torch.Tensor) -> torch.Tensor:
+        """Compute per-step ε-weight trace: w_t = Σ_{l=0}^{t} (γλ)^l within each episode segment.
 
-        cache: Dict[int, torch.Tensor] = {}
-        decay = torch.tensor(
-            self.grpo_gamma * self.grpo_lambda,
-            device=log_ratio.device,
-            dtype=log_ratio.dtype,
-        )
-
-        def weight_matrix(length: int) -> torch.Tensor:
-            if length in cache:
-                return cache[length]
-
-            idx = torch.arange(length, device=log_ratio.device, dtype=log_ratio.dtype)
-            row = idx[:, None]
-            col = idx[None, :]
-            lower = col <= row
-            lag = row - col
-
-            decay_lag = torch.pow(decay, lag)
-            if self.trace_style == "both":
-                # Section 3.2, Eq. (2): tr(t,l)=max((gamma*lambda)^l, (gamma*lambda)^(t-l)).
-                # In matrix form with token indices row=t and col=j=t-l:
-                # tr(t,j)=max((gamma*lambda)^(t-j), (gamma*lambda)^j).
-                decay_col = torch.pow(decay, col)
-                weights = torch.maximum(decay_lag, decay_col)
-            else:
-                # Classic eligibility trace (recent).
-                weights = decay_lag
-
-            if self.trace_epsilon > 0.0:
-                eps = torch.tensor(
-                    self.trace_epsilon, device=log_ratio.device, dtype=log_ratio.dtype
-                )
-                weights = torch.maximum(weights, eps)
-
-            weights = weights * lower.to(log_ratio.dtype)
-            diag = torch.arange(length, device=log_ratio.device)
-            weights[diag, diag] = 1.0
-            cache[length] = weights
-            return weights
-
+        Implements the ε-weight variant from https://arxiv.org/abs/2510.00194 Section 3.2.
+        These weights are applied to the per-step loss, not to the log-ratio.
+        """
+        num_steps, num_samplers = masks.shape
+        decay = self.grpo_gamma * self.grpo_lambda
         valid = masks > 0
+        all_rows, all_cols, all_vals = [], [], []
         for sampler_idx in range(num_samplers):
             col_valid = valid[:, sampler_idx]
             t = 0
@@ -602,52 +555,18 @@ class SafeGRPOLogGrad(AbstractActorCriticLoss):
                 if seg_len <= 0:
                     continue
 
-                weights = weight_matrix(seg_len)
-                seg_log_ratio = log_ratio[start:end, sampler_idx]
-                trace_log_ratio[start:end, sampler_idx] = weights @ seg_log_ratio
+                positions = torch.arange(seg_len, device=masks.device, dtype=masks.dtype)
+                powers = decay ** positions  # [(γλ)^0, (γλ)^1, ..., (γλ)^{T-1}]
+                weights = torch.cumsum(powers, dim=0)  # w_t = Σ_{l=0}^{t} (γλ)^l
+                all_vals.append(weights)
+                all_rows.append(torch.arange(start, end, device=masks.device))
+                all_cols.append(torch.full((seg_len,), sampler_idx, device=masks.device, dtype=torch.long))
 
-        return trace_log_ratio * valid.to(log_ratio.dtype)
-
-    def _compute_advantages(self,
-                            returns: torch.Tensor,
-                            final_time_steps: torch.Tensor,
-                            reward_weight: list,
-                            constraint_weights: list,
-                            costs: list,
-                            advantage_method: str,
-                            ) -> torch.Tensor:
-        episode_returns = returns[final_time_steps, torch.arange(returns.shape[1])]
-        
-        # TODO: this is the last part right??!
-        
-        # need t get the costs here 
-        # if advantage_method == 'scalarize_rewards':
-        #     scaled_returns = reward_weight * episode_returns
-        #     for idx, c_weight in enumerate(constraint_weights):
-        #         scaled_returns += c_weight * 
-        #     episode_returns = scaled_returns
-        
-        mean_return = episode_returns.mean()
-        std_return = episode_returns.std()
-        
-        if self.per_step_advantage:
-            adv_reward = (returns.squeeze() - mean_return) / (std_return + self.group_advantage_eps)
-            
-            # TODO: this is wrong!!!
-        else:
-            adv_reward = ((episode_returns - mean_return) / (std_return + 1e-5)).view(1, -1)
-            print("episode returns:", episode_returns.squeeze(), "adv_reward:", adv_reward.squeeze())
-        
-        return (
-                adv_reward,
-            {
-                "group_return_mean": float(mean_return.item()),
-                "group_return_std": float(std_return.item()),
-                "group_return_max": float(episode_returns.max().item()),
-                "group_return_min": float(episode_returns.min().item()),
-            }
-        )
-
+        if all_vals:
+            return torch.zeros_like(masks).index_put(
+                (torch.cat(all_rows), torch.cat(all_cols)), torch.cat(all_vals)
+            )
+        return torch.zeros_like(masks)
 
     def loss(  # type: ignore
         self,
@@ -663,57 +582,93 @@ class SafeGRPOLogGrad(AbstractActorCriticLoss):
         action_log_probs = self._squeeze_trailing_dim(
             actor_critic_output.distributions.log_prob(actions)
         )
+        dist_entropy: torch.FloatTensor = actor_critic_output.distributions.entropy()
         returns = self._squeeze_trailing_dim(cast(torch.FloatTensor, batch["returns"]))
 
         masks = torch.clone(
             self._squeeze_trailing_dim(cast(torch.FloatTensor, batch["masks"]))
         )
-        masks[0] = 1.0  # ensure first step is valid 
-        final_time_steps = masks.sum(dim=0).long() - 1
+        masks[0] = 1.0  # ensure first step is valid
+        # final_time_steps = masks.sum(dim=0).long() - 1
 
-        episode_returns = returns[0]
+        episode_returns = returns[0]  # [num_samplers]
         num_samplers = int(episode_returns.shape[0])
         group_ids = self._sampler_group_ids(
             batch=batch, num_samplers=num_samplers, device=episode_returns.device
         )
-
         unique_group_ids = torch.unique(group_ids, sorted=True)
+
+        # --- Constraint kwargs ---
+        reward_weight = float(kwargs.get("reward_weight", 1.0))
+        constraint_weights = kwargs.get("constraint_weights", None)  # [num_constraints] or None
+        constraint_names = kwargs.get("constraint_names", [])        # e.g. ["corner","danger",...]
+        use_constraints = constraint_weights is not None
+
+        if use_constraints:
+            # Per-step cost signals: [T, S] for each constraint.
+            per_step_costs = torch.stack([
+                self._squeeze_trailing_dim(cast(torch.FloatTensor, batch[name]))
+                for name in constraint_names
+            ], dim=-1)  # [T, S, K]
+            # Episode-level cost per sampler per constraint: sum over masked steps.
+            masks_expanded = masks.unsqueeze(-1)  # [T, S, 1]
+            episode_costs = (per_step_costs * masks_expanded).sum(dim=0)  # [S, K]
+
+        # --- Advantage computation (episode-level) ---
         groupwise_means = []
         groupwise_stds = []
+        cost_groupwise_means: list = []
+        cost_groupwise_stds: list = []
 
-        if self.per_step_advantage:
-            advs = torch.zeros_like(rewards)
-            for group_id in unique_group_ids.tolist():
-                in_group = group_ids == group_id
-                group_rewards = rewards[:, in_group]
-                group_masks = masks[:, in_group] > 0
-                valid_group_rewards = group_rewards[group_masks]
-                if valid_group_rewards.numel() == 0:
-                    raise ValueError(
-                        f"GRPO expected non-empty valid rewards for group {group_id}."
-                    )
+        advs = torch.zeros_like(episode_returns)
+        c_advs = torch.zeros(
+            *episode_returns.shape, len(constraint_names),
+            device=episode_returns.device, dtype=episode_returns.dtype,
+        ) if use_constraints and self.advantage_method == "scalarize_advantages" else None
 
-                mu = valid_group_rewards.mean()
-                sigma = valid_group_rewards.std(unbiased=False).clamp_min(
-                    self.group_advantage_eps
+        for group_id in unique_group_ids.tolist():
+            in_group = group_ids == group_id
+            g_returns = episode_returns[in_group]
+            mu_r = g_returns.mean()
+            sigma_r = g_returns.std(unbiased=False).clamp_min(self.group_advantage_eps)
+            groupwise_means.append(float(mu_r.item()))
+            groupwise_stds.append(float(sigma_r.item()))
+
+            if use_constraints and self.advantage_method == "scalarize_rewards":
+                # Scalarize episode returns: w_r * R[s] + sum_k(w_k * cost_k[s]).
+                g_ep_costs = episode_costs[in_group]  # [K_group, num_constraints]
+                scalarized = (
+                    reward_weight * g_returns
+                    + (g_ep_costs * constraint_weights.unsqueeze(0)).sum(dim=-1)
                 )
-                groupwise_means.append(float(mu.item()))
-                groupwise_stds.append(float(sigma.item()))
-                normalized_rewards = ((group_rewards - mu) / sigma) * group_masks.float()
-                advs[:, in_group] = normalized_rewards.flip(0).cumsum(dim=0).flip(0)
-        else:
-            advs = torch.zeros_like(episode_returns)
-            for group_id in unique_group_ids.tolist():
-                in_group = group_ids == group_id
-                group_episode_returns = episode_returns[in_group]
-                mu = group_episode_returns.mean()
-                sigma = group_episode_returns.std(unbiased=False).clamp_min(
-                    self.group_advantage_eps
-                )
-                groupwise_means.append(float(mu.item()))
-                groupwise_stds.append(float(sigma.item()))
-                advs[in_group] = (group_episode_returns - mu) / sigma
-            advs = advs.view(1, -1)
+                mu_s = scalarized.mean()
+                sigma_s = scalarized.std(unbiased=False).clamp_min(self.group_advantage_eps)
+                advs[in_group] = (scalarized - mu_s) / sigma_s
+                cost_groupwise_means.append(float(g_ep_costs.mean().item()))
+                cost_groupwise_stds.append(float(g_ep_costs.std(unbiased=False).item()))
+
+            elif use_constraints and self.advantage_method == "scalarize_advantages":
+                # Normalize reward and each constraint's episode cost independently per group.
+                advs[in_group] = (g_returns - mu_r) / sigma_r
+                g_ep_costs = episode_costs[in_group]  # [K_group, num_constraints]
+                for k in range(len(constraint_names)):
+                    g_cost_k = g_ep_costs[:, k]
+                    mu_c = g_cost_k.mean()
+                    sigma_c = g_cost_k.std(unbiased=False).clamp_min(self.group_advantage_eps)
+                    c_advs[in_group, k] = (g_cost_k - mu_c) / sigma_c
+                cost_groupwise_means.append(float(g_ep_costs.mean().item()))
+                cost_groupwise_stds.append(float(g_ep_costs.std(unbiased=False).item()))
+
+            else:
+                # Unconstrained: standard episode-level GRPO.
+                advs[in_group] = (g_returns - mu_r) / sigma_r
+
+        if use_constraints and self.advantage_method == "scalarize_advantages":
+            # Combine: w_r * r_adv + sum_k(w_k * c_adv_k). constraint_weights are negative.
+            cost_adv_combined = (c_advs * constraint_weights.unsqueeze(0)).sum(dim=-1)
+            advs = reward_weight * advs + cost_adv_combined
+
+        advs = advs.view(1, -1)
 
         if self.advantage_clamp_min is not None:
             clamped_mask = advs < self.advantage_clamp_min
@@ -739,20 +694,20 @@ class SafeGRPOLogGrad(AbstractActorCriticLoss):
             ),
             "adv_clamped_frac": adv_clamped_frac,
         }
+        if use_constraints and cost_groupwise_means:
+            adv_stats["cost_groupwise_return_mean"] = float(
+                sum(cost_groupwise_means) / len(cost_groupwise_means)
+            )
+            adv_stats["cost_groupwise_return_std"] = float(
+                sum(cost_groupwise_stds) / len(cost_groupwise_stds)
+            )
 
         clip_param = self.clip_param
         old_action_log_probs = self._squeeze_trailing_dim(
             cast(torch.FloatTensor, batch["old_action_log_probs"])
         )
         log_ratio = action_log_probs - old_action_log_probs
-        raw_ratio = torch.exp(log_ratio)
-
-        if self.use_grpo_lambda:
-            ratio_log_for_loss = self._compute_lambda_trace_log_ratio(log_ratio, masks)
-            ratio_for_loss = torch.exp(ratio_log_for_loss)
-        else:
-            ratio_log_for_loss = log_ratio
-            ratio_for_loss = raw_ratio
+        ratio_for_loss = torch.exp(log_ratio)
 
         while advs.dim() < ratio_for_loss.dim():
             advs = advs.unsqueeze(-1)
@@ -767,18 +722,34 @@ class SafeGRPOLogGrad(AbstractActorCriticLoss):
         masks_for_loss = masks
         while masks_for_loss.dim() < action_loss.dim():
             masks_for_loss = masks_for_loss.unsqueeze(-1)
+
+        if self.use_grpo_lambda:
+            # ε-weight: weight per-step loss by w_t = Σ_{l=0}^{t} (γλ)^l within each episode.
+            trace_weights = self._compute_epsilon_weights(masks)
+            while trace_weights.dim() < action_loss.dim():
+                trace_weights = trace_weights.unsqueeze(-1)
+            effective_weights = trace_weights * masks_for_loss
+        else:
+            effective_weights = masks_for_loss
+
         action_loss = (
-            (action_loss * masks_for_loss).sum(dim=0)
-            / masks_for_loss.sum(dim=0).clamp(min=1.0)
+            (action_loss * effective_weights).sum(dim=0)
+            / effective_weights.sum(dim=0).clamp(min=1.0)
         ).mean()
 
         for idx in range(masks.shape[1]):
             assert masks[:, idx].sum() > 0, f"GRPO expected non-empty valid mask for step {idx}."
         
+        entropy_mean = dist_entropy.mean()
+        entropy_bonus = -self.entropy_coef * entropy_mean  # minimizing -H*coef maximizes H
+        total_loss = action_loss + entropy_bonus
+
         result = (
-            action_loss,
+            total_loss,
             {
                 "action": float(action_loss.item()),
+                "entropy": float(-entropy_mean.item()),  # negative = policy is more random (good)
+                "entropy_bonus": float(entropy_bonus.item()),
                 "log_ratio_mean": float(log_ratio.mean().item()),
                 "ratio_mean": float(ratio_for_loss.mean().item()),
                 "clamped_ratio_mean": float(clamped_ratio.mean().item()),

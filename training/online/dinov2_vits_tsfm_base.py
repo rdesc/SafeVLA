@@ -98,7 +98,6 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     grpo_beta: float = 0.0  # NOTE: not implemented
     grpo_clip_param: float = 0.1
     grpo_group_advantage_eps: float = 1e-5
-    grpo_per_step_advantage: bool = False
     grpo_use_lambda: bool = False
     grpo_lambda: float = 0.98
     grpo_lambda_gamma: float = 0.99
@@ -116,7 +115,8 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
 
     use_constraints: bool = False  # if use_grpo is False, and use_constraints is True, then use the original SafeVLA constrained PPO setup
     advantage_method: str = "scalarize_advantages"
-    constraints_thresholds: Optional[Sequence[float]] = None
+    constraint_thresholds: Optional[Sequence[float]] = None
+    constraint_names: Optional[Sequence[str]] = None
     lagrangian_multiplier_init: float = 0.001
     lambda_lr: float = 0.035
     lambda_optimizer: str = "Adam"
@@ -330,7 +330,6 @@ class DinoV2ViTSTSFMBase(BaseConfig):
             NewGRPOConfig = dict(
                 clip_param=self.params.grpo_clip_param,
                 group_advantage_eps=self.params.grpo_group_advantage_eps,
-                per_step_advantage=self.params.grpo_per_step_advantage,
                 num_generations=self.params.grpo_num_generations,
                 use_grpo_lambda=self.params.grpo_use_lambda,
                 grpo_lambda=self.params.grpo_lambda,
@@ -338,6 +337,7 @@ class DinoV2ViTSTSFMBase(BaseConfig):
                 trace_style=self.params.grpo_trace_style,
                 trace_epsilon=self.params.grpo_trace_epsilon,
                 advantage_clamp_min=self.params.grpo_advantage_clamp_min,
+                advantage_method=self.params.advantage_method,
             )
             
             return TrainingPipeline(
@@ -432,7 +432,7 @@ class DinoV2ViTSTSFMBase(BaseConfig):
         return SimpleWandbLogging(
             project=self.params.wandb_project,
             entity=self.params.wandb_entity,
-            log_videos_every_n_logs=self.params.wandb_video_every_logs,
+            log_videos_every_n_logs=(self.params.wandb_video_every_logs if self.params.visualize else 0),
             log_videos_from_device=self.params.wandb_video_device,
             max_videos_per_log=self.params.wandb_video_max_videos_per_log
         )

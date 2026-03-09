@@ -310,6 +310,7 @@ class BaseConfig(ExperimentConfig, ABC):
         devices: Optional[List[int]] = None,
         seeds: Optional[List[int]] = None,
         deterministic_cudnn: bool = False,
+        total_steps: int = 0,
     ) -> Dict[str, Any]:
         seed = None
         if mode in ["val", "test"] and seeds is not None and len(seeds) > 0:
@@ -345,7 +346,7 @@ class BaseConfig(ExperimentConfig, ABC):
                 )
             group_total_processes = total_processes // num_generations
             group_process_ind = process_ind // num_generations
-            house_inds_seed = group_process_ind
+            house_inds_seed = group_process_ind + total_steps
             
         device = devices[group_process_ind % len(devices)] if devices is not None else None
         print(f"Process {process_ind} | Seed: {seed} | Group: {group_process_ind} | Device: {device}"
@@ -384,6 +385,7 @@ class BaseConfig(ExperimentConfig, ABC):
         devices: Optional[List[int]] = None,
         seeds: Optional[List[int]] = None,
         deterministic_cudnn: bool = False,
+        total_steps: int = 0,
     ) -> Dict[str, Any]:
         return self.get_sampler_args(
             "train",
@@ -391,6 +393,7 @@ class BaseConfig(ExperimentConfig, ABC):
             total_processes=total_processes,
             devices=devices,
             deterministic_cudnn=deterministic_cudnn,
+            total_steps=total_steps,
         )
 
     def valid_task_sampler_args(

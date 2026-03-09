@@ -121,7 +121,6 @@ class SimpleWandbLogging(Callback):
         wandb.log(log_data)
 
         self._log_call_count += 1
-        print(f"[WANDB] {step}, log_call_count {self._log_call_count}, {self.log_videos_every_n_logs}")
 
         if (
             self.log_videos_every_n_logs > 0

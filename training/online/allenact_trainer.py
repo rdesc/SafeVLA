@@ -1,4 +1,6 @@
 import abc
+import glob as glob_module
+import os
 from dataclasses import dataclass, fields
 from typing import Any, Dict, List, Literal, Optional, Union
 
@@ -21,6 +23,9 @@ class OnPolicyRunnerMixin(abc.ABC):
     callbacks: str = ""
     cost_limit: float = None
     checkpoint: Optional[str] = None
+    restart: bool = True  # if True, skip auto-resume and start from scratch
+    reset_optimizer: bool = False  # if True, don't restore optimizer state on resume
+    lr_warmup_steps: int = 100  # linearly ramp LR from 0 to target over this many steps on resume
 
     @abc.abstractmethod
     def get_config(self) -> ExperimentConfig:
@@ -44,6 +49,37 @@ class OnPolicyRunnerMixin(abc.ABC):
             callbacks_paths=self.callbacks,
         )
 
+    def _find_latest_checkpoint(self) -> Optional[str]:
+        """Auto-detect the latest checkpoint under output_dir/tag or output_dir/checkpoints/tag."""
+        tag = getattr(self, "tag", "")
+        base_exp_dir = None
+        for candidate in [
+            os.path.join(self.output_dir, tag),
+            os.path.join(self.output_dir, "checkpoints", tag),
+        ]:
+            if os.path.isdir(candidate):
+                base_exp_dir = candidate
+                break
+
+        if base_exp_dir is None:
+            return None
+
+        try:
+            subdirs = sorted(
+                (d for d in os.scandir(base_exp_dir) if d.is_dir()),
+                key=lambda d: d.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return None
+
+        for subdir in subdirs:
+            ckpts = glob_module.glob(os.path.join(subdir.path, "exp*.pt"))
+            if ckpts:
+                return max(ckpts, key=os.path.getmtime)
+
+        return None
+
     def train(
         self,
         checkpoint: Optional[
@@ -58,7 +94,12 @@ class OnPolicyRunnerMixin(abc.ABC):
     ):
         if checkpoint is None and hasattr(self, 'checkpoint'):
             checkpoint = self.checkpoint
-            print(f"Using checkpoint from self.checkpoint: {checkpoint}")
+        if checkpoint is None and not self.restart:
+            checkpoint = self._find_latest_checkpoint()
+            if checkpoint is not None:
+                print(f"\nAuto-resuming from latest checkpoint: {checkpoint}\n")
+        elif self.restart:
+            print("\nRestart flag set — starting from scratch, ignoring any existing checkpoints.\n")
         runner = self.build_runner(mode="train")
         runner.start_train(
             checkpoint=checkpoint,
@@ -70,8 +111,11 @@ class OnPolicyRunnerMixin(abc.ABC):
             save_ckpt_at_every_host=save_ckpt_at_every_host,
             cost_limit=self.cost_limit,
             advantage_method=getattr(self, "advantage_method", "scalarize_advantages"),
-            use_constraints=getattr(self, "use_constraints", None),
-            constraints_thresholds=getattr(self, "constraints_thresholds", None),
+            use_constraints=getattr(self, "use_constraints", False),
+            constraint_thresholds=getattr(self, "constraint_thresholds"),
+            constraint_names=getattr(self, "constraint_names"),
+            reset_optimizer=self.reset_optimizer,
+            lr_warmup_steps=self.lr_warmup_steps,
         )
 
     def test(

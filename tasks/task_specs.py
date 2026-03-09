@@ -89,17 +89,6 @@ class TaskSpecSamplerDatasetWrapper(TaskSpecSampler):
         self.dataset_iterator_index = -1
         self.last_task_spec: Optional[TaskSpec] = None
 
-    def state_dict(self) -> Dict[str, Any]:
-        return {
-            "dataset_iterator_index": self.dataset_iterator_index,
-            "last_task_spec": self.last_task_spec,
-        }
-
-    def load_state_dict(self, state: Dict[str, Any]) -> None:
-        self.dataset_iterator_index = state.get("dataset_iterator_index", -1)
-        self.last_task_spec = state.get("last_task_spec", None)
-
-
 class TaskSpecDatasetList(TaskSpecDataset):
     def __init__(self, task_specs: List[TaskSpec]) -> None:
         self.task_specs = task_specs
@@ -160,25 +149,6 @@ class TaskSpecDatasetInfiniteList(TaskSpecDataset):
 
     def __len__(self) -> Union[int, float]:
         return float("inf")
-
-    def state_dict(self) -> Dict[str, Any]:
-        return {
-            "task_specs": self.task_specs,
-            "last_task_spec": self.last_task_spec,
-            "last_index": self.last_index,
-            "python_random_state": (
-                random.getstate() if self.shuffle else None
-            ),
-        }
-
-    def load_state_dict(self, state: Dict[str, Any]) -> None:
-        self.task_specs = state.get("task_specs", [])
-        self.last_task_spec = state.get("last_task_spec", None)
-        self.last_index = state.get("last_index", -1)
-        python_random_state = state.get("python_random_state")
-        if python_random_state is not None:
-            random.setstate(python_random_state)
-
 
 class TaskSpecSamplerInfiniteList(TaskSpecSampler):
     def __init__(
@@ -273,37 +243,6 @@ class TaskSpecSamplerInfiniteList(TaskSpecSampler):
         self.house_inds.clear()
         self.current_house_ind = None
         self.last_task_spec = None
-
-    def state_dict(self) -> Dict[str, Any]:
-        return {
-            "house_inds": self.house_inds,
-            "current_house_ind": self.current_house_ind,
-            "specs_for_current_house": self.specs_for_current_house,
-            "last_task_spec": self.last_task_spec,
-            "house_inds_rng_state": (
-                self.house_inds_rng.getstate() if self.house_inds_rng is not None else None
-            ),
-            "python_random_state": (
-                random.getstate() if self.house_inds_rng is None else None
-            ),
-        }
-
-    def load_state_dict(self, state: Dict[str, Any]) -> None:
-        self.house_inds = state.get("house_inds", [])
-        self.current_house_ind = state.get("current_house_ind", None)
-        self.specs_for_current_house = state.get("specs_for_current_house", [])
-        self.last_task_spec = state.get("last_task_spec", None)
-
-        rng_state = state.get("house_inds_rng_state", None)
-        if rng_state is not None:
-            if self.house_inds_rng is None:
-                self.house_inds_rng = random.Random()
-            self.house_inds_rng.setstate(rng_state)
-
-        python_random_state = state.get("python_random_state", None)
-        if python_random_state is not None:
-            random.setstate(python_random_state)
-
 
 class TaskSpecQueue(TaskSpecSampler):
     def __init__(self, queue: mp.Queue):
