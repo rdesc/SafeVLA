@@ -1,4 +1,4 @@
-from collections import OrderedDict
+training/online/loss/customized_loss.pyfrom collections import OrderedDict
 from typing import Dict, cast
 from allenact.algorithms.onpolicy_sync.losses import PPO
 
@@ -475,6 +475,8 @@ class SafeGRPOLogGrad(AbstractActorCriticLoss):
         advantage_clamp_min: Optional[float] = None,
         advantage_method: str = "scalarize_advantages",
         entropy_coef: float = 0.0,
+        use_rloo: bool = False,
+        **kwargs
     ):
         super().__init__()
         assert advantage_method in ("scalarize_advantages", "scalarize_rewards")
@@ -487,8 +489,13 @@ class SafeGRPOLogGrad(AbstractActorCriticLoss):
         self.advantage_clamp_min = advantage_clamp_min
         self.advantage_method = advantage_method
         self.entropy_coef = entropy_coef
+        self.use_rloo = use_rloo  # REINFORCE Leave-One-Out baseline instead of GRPO normalization
         if self.num_generations <= 0:
             raise ValueError("`num_generations` must be >= 1 for GRPO.")
+        if self.use_grpo_lambda and self.use_rloo:
+            raise ValueError("`use_grpo_lambda` and `use_rloo` are mutually exclusive.")
+        if self.use_rloo and self.num_generations < 2:
+            raise ValueError("`use_rloo` requires `num_generations` >= 2 for a leave-one-out baseline.")
         if self.use_grpo_lambda:
             if not 0.0 <= self.grpo_lambda <= 1.0:
                 raise ValueError(f"Expected grpo_lambda in [0, 1], got {self.grpo_lambda}.")
@@ -589,7 +596,6 @@ class SafeGRPOLogGrad(AbstractActorCriticLoss):
             self._squeeze_trailing_dim(cast(torch.FloatTensor, batch["masks"]))
         )
         masks[0] = 1.0  # ensure first step is valid
-        # final_time_steps = masks.sum(dim=0).long() - 1
 
         episode_returns = returns[0]  # [num_samplers]
         num_samplers = int(episode_returns.shape[0])
@@ -614,6 +620,9 @@ class SafeGRPOLogGrad(AbstractActorCriticLoss):
             masks_expanded = masks.unsqueeze(-1)  # [T, S, 1]
             episode_costs = (per_step_costs * masks_expanded).sum(dim=0)  # [S, K]
 
+        # Final-step return per sampler: nonzero iff the episode ended with a success reward.
+        final_step_returns = returns[masks.sum(dim=0).long() - 1, torch.arange(num_samplers, device=episode_returns.device)]
+
         # --- Advantage computation (episode-level) ---
         groupwise_means = []
         groupwise_stds = []
@@ -634,7 +643,47 @@ class SafeGRPOLogGrad(AbstractActorCriticLoss):
             groupwise_means.append(float(mu_r.item()))
             groupwise_stds.append(float(sigma_r.item()))
 
-            if use_constraints and self.advantage_method == "scalarize_rewards":
+            # Skip action gradient for groups where every generation succeeded.
+            # if final_step_returns[in_group].all():
+            #     if use_constraints:
+            #         g_ep_costs = episode_costs[in_group]
+            #         cost_groupwise_means.append(float(g_ep_costs.mean().item()))
+            #         cost_groupwise_stds.append(float(g_ep_costs.std(unbiased=False).item()))
+            #     continue
+
+            if self.use_rloo:
+                # REINFORCE Leave-One-Out: adv_i = r_i - mean(r_j for j != i)
+                n = g_returns.shape[0]
+                sum_r = g_returns.sum()
+                loo_baseline = (sum_r - g_returns) / (n - 1)
+
+                if use_constraints and self.advantage_method == "scalarize_rewards":
+                    g_ep_costs = episode_costs[in_group]
+                    scalarized = (
+                        reward_weight * g_returns
+                        + (g_ep_costs * constraint_weights.unsqueeze(0)).sum(dim=-1)
+                    )
+                    sum_s = scalarized.sum()
+                    loo_baseline_s = (sum_s - scalarized) / (n - 1)
+                    advs[in_group] = scalarized - loo_baseline_s
+                    cost_groupwise_means.append(float(g_ep_costs.mean().item()))
+                    cost_groupwise_stds.append(float(g_ep_costs.std(unbiased=False).item()))
+
+                elif use_constraints and self.advantage_method == "scalarize_advantages":
+                    advs[in_group] = g_returns - loo_baseline
+                    g_ep_costs = episode_costs[in_group]
+                    for k in range(len(constraint_names)):
+                        g_cost_k = g_ep_costs[:, k]
+                        sum_c = g_cost_k.sum()
+                        loo_baseline_c = (sum_c - g_cost_k) / (n - 1)
+                        c_advs[in_group, k] = g_cost_k - loo_baseline_c
+                    cost_groupwise_means.append(float(g_ep_costs.mean().item()))
+                    cost_groupwise_stds.append(float(g_ep_costs.std(unbiased=False).item()))
+
+                else:
+                    advs[in_group] = g_returns - loo_baseline
+
+            elif use_constraints and self.advantage_method == "scalarize_rewards":
                 # Scalarize episode returns: w_r * R[s] + sum_k(w_k * cost_k[s]).
                 g_ep_costs = episode_costs[in_group]  # [K_group, num_constraints]
                 scalarized = (

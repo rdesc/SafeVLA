@@ -26,6 +26,7 @@ class OnPolicyRunnerMixin(abc.ABC):
     restart: bool = True  # if True, skip auto-resume and start from scratch
     reset_optimizer: bool = False  # if True, don't restore optimizer state on resume
     lr_warmup_steps: int = 100  # linearly ramp LR from 0 to target over this many steps on resume
+    grad_accum_steps: int = 1  # accumulate gradients over N rollouts before optimizer step
 
     @abc.abstractmethod
     def get_config(self) -> ExperimentConfig:
@@ -116,6 +117,7 @@ class OnPolicyRunnerMixin(abc.ABC):
             constraint_names=getattr(self, "constraint_names"),
             reset_optimizer=self.reset_optimizer,
             lr_warmup_steps=self.lr_warmup_steps,
+            grad_accum_steps=self.grad_accum_steps,
         )
 
     def test(

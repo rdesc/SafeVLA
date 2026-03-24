@@ -101,9 +101,9 @@ class DinoV2ViTSTSFMBaseParams(BaseConfigParams):
     grpo_use_lambda: bool = False
     grpo_lambda: float = 0.98
     grpo_lambda_gamma: float = 0.99
-    grpo_trace_style: str = "recent"  # one of {"recent", "both"}
-    grpo_trace_epsilon: float = 1e-4
     grpo_advantage_clamp_min: Optional[float] = -0.1
+    grpo_entropy_coef: float = 0.0
+    use_rloo: bool = False
     max_stage_steps: int = int(1e9)
     train_steps_value_network: int = 200000
     
@@ -334,10 +334,10 @@ class DinoV2ViTSTSFMBase(BaseConfig):
                 use_grpo_lambda=self.params.grpo_use_lambda,
                 grpo_lambda=self.params.grpo_lambda,
                 grpo_gamma=self.params.grpo_lambda_gamma,
-                trace_style=self.params.grpo_trace_style,
-                trace_epsilon=self.params.grpo_trace_epsilon,
                 advantage_clamp_min=self.params.grpo_advantage_clamp_min,
                 advantage_method=self.params.advantage_method,
+                entropy_coef=self.params.grpo_entropy_coef,
+                use_rloo=self.params.use_rloo,
             )
             
             return TrainingPipeline(
@@ -361,7 +361,7 @@ class DinoV2ViTSTSFMBase(BaseConfig):
                         training_settings=TrainingSettings(
                             num_steps=self.params.num_steps_per_rollout,
                             metric_accumulate_interval=self.params.metric_accumulate_interval,
-                            advance_scene_rollout_period=1
+                            advance_scene_rollout_period=max(1, self.params.steps_in_house_before_force_scene_advance // 128)
                         ),
                     ),
                 ],
